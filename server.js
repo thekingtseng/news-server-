@@ -5,23 +5,34 @@ const PORT = process.env.PORT || 10000;
 
 app.use(express.json());
 
+// 🚫 預設黑名單媒體
 let blockList = ['三立', '民視', 'SETN', 'FTV'];
-let loveList = ['正妹', '台積電', '晶片', 'AI', '黃仁勳'];
+// 💚 預設喜好關鍵字（已將黃仁勳移除，保留其他你測試過的字眼）
+let loveList = ['正妹', '台積電', '晶片', 'AI', '曾奕瑋'];
 
-// 後端多頻道抓取大水桶
 app.get('/api/news', async (req, res) => {
     try {
-        // 定義多個 Google News 分類 RSS 來源（焦點、台灣、政治、科技）
-        const urls = [
+        const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        
+        // 進化版：加入更多大產量的分類頻道（焦點、台灣、政治、科技、健康、娛樂），全面衝高總新聞量！
+        let urls = [
             'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 焦點
             'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFZ4ZERCV0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 台灣在地
             'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFp4WkRjU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 政治
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRGR6TVdZU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'  // 科技
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRGR6TVdZU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 科技
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNR3B6YldZd0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 健康
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRWx6Y0d3U0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'  // 娛樂
         ];
 
-        // 後端同時發出所有請求（並行處理速度最快）
+        // 把喜好關鍵字（如：曾奕瑋）做成搜尋專線
+        loveList.forEach(keyword => {
+            const encodedKeyword = encodeURIComponent(keyword);
+            urls.push(`https://news.google.com/rss/search?q=${encodedKeyword}&hl=zh-TW&gl=TW&ceid=TW:zh-Hant`);
+        });
+
+        // 併發請求
         const requests = urls.map(url => 
-            axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } }).catch(() => null)
+            axios.get(url, { headers: { 'User-Agent': userAgent } }).catch(() => null)
         );
         const responses = await Promise.all(requests);
 
@@ -29,7 +40,6 @@ app.get('/api/news', async (req, res) => {
         responses.forEach(response => {
             if (response && response.data) {
                 const items = response.data.split('<item>');
-                // 跳過第一個區塊（頻道資訊）
                 for (let i = 1; i < items.length; i++) {
                     allItems.push(items[i]);
                 }
@@ -40,8 +50,6 @@ app.get('/api/news', async (req, res) => {
         let blockedCount = 0;
         let lovedCount = 0;
         let finalNewsList = [];
-        
-        // 用來檢查重複新聞的雜湊表（以新聞網址作為唯一依據）
         const seenUrls = new Set();
 
         allItems.forEach(item => {
@@ -52,30 +60,29 @@ app.get('/api/news', async (req, res) => {
                 const title = titleMatch[1].replace('<![CDATA[', '').replace(']]>', '');
                 const link = linkMatch[1];
                 
-                // 1. 檢查是否重複，重複的直接跳過
+                // 去除重複新聞
                 if (seenUrls.has(link)) {
-                    totalCount--; // 扣除重複總量
+                    totalCount--;
                     return;
                 }
 
-                // 2. 檢查是否命中阻隔黑名單
+                // 過濾黑名單
                 const isBlocked = blockList.some(word => title.includes(word));
                 if (isBlocked) {
                     blockedCount++;
                     return;
                 }
                 
-                // 3. 檢查是否命中喜好關鍵字
+                // 命中白名單
                 const isLoved = loveList.some(word => title.includes(word));
                 if (isLoved) lovedCount++;
 
-                // 記住這條新聞，並塞入最終清單
                 seenUrls.add(link);
                 finalNewsList.push({ title, link, isLoved });
             }
         });
 
-        // 喜好新聞排在最前面
+        // 喜好置頂排序
         finalNewsList.sort((a, b) => b.isLoved - a.isLoved);
 
         res.json({
@@ -125,16 +132,16 @@ app.get('/', (req, res) => {
     </head>
     <body>
         <div class="box" style="text-align:center;">
-            <h2>🎯 台灣新聞自訂瀏覽器 (多頻道大容量版)</h2>
+            <h2>🎯 台灣新聞自訂瀏覽器 (深挖搜尋終極版)</h2>
             <button class="btn-ref" onclick="fetchNews()">🔄 立即手動更新新聞</button>
             <div style="font-size:13px; color:#65676b;">網頁將在 <span id="cd" style="color:red; font-weight:bold;">60</span> 秒後自動無感刷新</div>
-            <div id="stats" style="font-size:13px; font-weight:bold; margin-top:8px; color:#1c1e21;">正在大口吞噬新聞中...</div>
+            <div id="stats" style="font-size:13px; font-weight:bold; margin-top:8px; color:#1c1e21;">正在跨海調度 Google 全部分類數據庫中...</div>
         </div>
 
         <div class="box">
-            <h4 style="margin:0; color:#10b981;">💚 喜好關鍵字（置頂推薦）</h4>
+            <h4 style="margin:0; color:#10b981;">💚 喜好關鍵字（自動觸發深度搜尋模式）</h4>
             <div class="input-group">
-                <input type="text" id="love-in" placeholder="例如：台積電、正妹">
+                <input type="text" id="love-in" placeholder="例如：台積電、曾奕瑋">
                 <button class="btn-love" onclick="addTag('love')">加入</button>
             </div>
             <div class="tag-area" id="love-tags"></div>
@@ -155,7 +162,7 @@ app.get('/', (req, res) => {
             let currentBlock = [], currentLove = [], cd = 60;
 
             function fetchNews() {
-                document.getElementById('stats').innerText = '後端正在同步跨頻道抓取並去重過濾...';
+                document.getElementById('stats').innerText = '核心大腦正同步搜索常規頻道與關鍵字專線...';
                 fetch('/api/news')
                     .then(res => res.json())
                     .then(data => {
@@ -163,12 +170,12 @@ app.get('/', (req, res) => {
                         currentLove = data.loveList;
                         renderTags();
                         
-                        document.getElementById('stats').innerText = \`📊 後端大數據報告 -> 跨頻道總計: \${data.stats.total} 則 | 顯示: \${data.stats.visible} 則 | ❤️ 命中: \${data.stats.loved} 則 | 🚫 蒸發: \${data.stats.blocked} 則\`;
+                        document.getElementById('stats').innerText = \`📊 全網透視報告 -> 撈取總計: \${data.stats.total} 則 | 顯示: \${data.stats.visible} 則 | ❤️ 命中: \${data.stats.loved} 則 | 🚫 蒸發: \${data.stats.blocked} 則\`;
                         
                         let html = '';
                         data.news.forEach(n => {
                             html += \`<div class="card \${n.isLoved?'hot':''}">
-                                \${n.isLoved?'<div class="badge">🔥 命中喜好關鍵字優先推薦</div>':''}
+                                \${n.isLoved?'<div class="badge">🔥 命中關鍵字（深度搜尋回傳結果）</div>':''}
                                 <a href="\${n.link}" target="_blank">\${n.title}</a>
                             </div>\`;
                         });
