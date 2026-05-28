@@ -3,30 +3,48 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// 允許後端解析前端傳來的 JSON 資料
 app.use(express.json());
 
-// 後端記憶體：預設的黑名單與喜好關鍵字
 let blockList = ['三立', '民視', 'SETN', 'FTV'];
-let loveList = ['正妹', '台積電', '晶片', 'AI'];
+let loveList = ['正妹', '台積電', '晶片', 'AI', '黃仁勳'];
 
-// API 1: 讓前端獲取過濾後的新聞資料與當前設定
+// 後端多頻道抓取大水桶
 app.get('/api/news', async (req, res) => {
     try {
-        const response = await axios.get('https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        // 定義多個 Google News 分類 RSS 來源（焦點、台灣、政治、科技）
+        const urls = [
+            'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 焦點
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFZ4ZERCV0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 台灣在地
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFp4WkRjU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant', // 政治
+            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRGR6TVdZU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'  // 科技
+        ];
+
+        // 後端同時發出所有請求（並行處理速度最快）
+        const requests = urls.map(url => 
+            axios.get(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } }).catch(() => null)
+        );
+        const responses = await Promise.all(requests);
+
+        let allItems = [];
+        responses.forEach(response => {
+            if (response && response.data) {
+                const items = response.data.split('<item>');
+                // 跳過第一個區塊（頻道資訊）
+                for (let i = 1; i < items.length; i++) {
+                    allItems.push(items[i]);
+                }
+            }
         });
-        
-        const rssText = response.data;
-        const items = rssText.split('<item>');
-        
-        let totalCount = items.length - 1;
+
+        let totalCount = allItems.length;
         let blockedCount = 0;
         let lovedCount = 0;
         let finalNewsList = [];
+        
+        // 用來檢查重複新聞的雜湊表（以新聞網址作為唯一依據）
+        const seenUrls = new Set();
 
-        for (let i = 1; i < items.length; i++) {
-            const item = items[i];
+        allItems.forEach(item => {
             const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
             const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
             
@@ -34,20 +52,28 @@ app.get('/api/news', async (req, res) => {
                 const title = titleMatch[1].replace('<![CDATA[', '').replace(']]>', '');
                 const link = linkMatch[1];
                 
-                // 檢查是否命中黑名單
+                // 1. 檢查是否重複，重複的直接跳過
+                if (seenUrls.has(link)) {
+                    totalCount--; // 扣除重複總量
+                    return;
+                }
+
+                // 2. 檢查是否命中阻隔黑名單
                 const isBlocked = blockList.some(word => title.includes(word));
                 if (isBlocked) {
                     blockedCount++;
-                    continue;
+                    return;
                 }
                 
-                // 檢查是否命中喜好關鍵字
+                // 3. 檢查是否命中喜好關鍵字
                 const isLoved = loveList.some(word => title.includes(word));
                 if (isLoved) lovedCount++;
 
+                // 記住這條新聞，並塞入最終清單
+                seenUrls.add(link);
                 finalNewsList.push({ title, link, isLoved });
             }
-        }
+        });
 
         // 喜好新聞排在最前面
         finalNewsList.sort((a, b) => b.isLoved - a.isLoved);
@@ -63,14 +89,12 @@ app.get('/api/news', async (req, res) => {
     }
 });
 
-// API 2: 接收前端傳來的新設定
 app.post('/api/config', (req, res) => {
     if (req.body.blockList) blockList = req.body.blockList;
     if (req.body.loveList) loveList = req.body.loveList;
     res.json({ success: true, blockList, loveList });
 });
 
-// 主網頁：包含動態控制面板與自動刷新 JavaScript
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
@@ -101,10 +125,10 @@ app.get('/', (req, res) => {
     </head>
     <body>
         <div class="box" style="text-align:center;">
-            <h2>🎯 台灣新聞自訂瀏覽器</h2>
+            <h2>🎯 台灣新聞自訂瀏覽器 (多頻道大容量版)</h2>
             <button class="btn-ref" onclick="fetchNews()">🔄 立即手動更新新聞</button>
             <div style="font-size:13px; color:#65676b;">網頁將在 <span id="cd" style="color:red; font-weight:bold;">60</span> 秒後自動無感刷新</div>
-            <div id="stats" style="font-size:13px; font-weight:bold; margin-top:8px; color:#1c1e21;">正在通訊中...</div>
+            <div id="stats" style="font-size:13px; font-weight:bold; margin-top:8px; color:#1c1e21;">正在大口吞噬新聞中...</div>
         </div>
 
         <div class="box">
@@ -131,7 +155,7 @@ app.get('/', (req, res) => {
             let currentBlock = [], currentLove = [], cd = 60;
 
             function fetchNews() {
-                document.getElementById('stats').innerText = '正在向後端要求最新過濾數據...';
+                document.getElementById('stats').innerText = '後端正在同步跨頻道抓取並去重過濾...';
                 fetch('/api/news')
                     .then(res => res.json())
                     .then(data => {
@@ -139,7 +163,7 @@ app.get('/', (req, res) => {
                         currentLove = data.loveList;
                         renderTags();
                         
-                        document.getElementById('stats').innerText = \`📊 後端隔離報告 -> 總共: \${data.stats.total} 則 | 顯示: \${data.stats.visible} 則 | ❤️ 命中: \${data.stats.loved} 則 | 🚫 蒸發: \${data.stats.blocked} 則\`;
+                        document.getElementById('stats').innerText = \`📊 後端大數據報告 -> 跨頻道總計: \${data.stats.total} 則 | 顯示: \${data.stats.visible} 則 | ❤️ 命中: \${data.stats.loved} 則 | 🚫 蒸發: \${data.stats.blocked} 則\`;
                         
                         let html = '';
                         data.news.forEach(n => {
@@ -149,7 +173,7 @@ app.get('/', (req, res) => {
                             </div>\`;
                         });
                         document.getElementById('news-list').innerHTML = html;
-                        cd = 60; // 刷新後重置倒數計時
+                        cd = 60;
                     });
             }
 
@@ -182,7 +206,6 @@ app.get('/', (req, res) => {
                 }).then(() => fetchNews());
             }
 
-            // 每秒執行倒數計時，到了 0 就自動觸發更新
             setInterval(() => {
                 cd--;
                 document.getElementById('cd').innerText = cd;
