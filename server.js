@@ -6,9 +6,7 @@ const PORT = process.env.PORT || 10000;
 const CACHE_FILE = '/tmp/news_cache.json';
 
 app.use(express.json());
-
-// 提供預設圖片 (請在專案根目錄建立 public/default.jpg)
-app.use(express.static('public'));
+app.use(express.static('public')); // 提供 default.jpg
 
 let cache = [];
 
@@ -73,7 +71,22 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 </div>
 
 <div class="cg">
-  <!-- 喜好關鍵字 / 黑名單面板 -->
+  <div class="pn">
+    <div class="pt lv">💚 喜好關鍵字（置頂）</div>
+    <div class="ir">
+      <input id="li" placeholder="台積電、AI..." onkeydown="if(event.key==='Enter')aT('love')">
+      <button class="ba lv" onclick="aT('love')">加入</button>
+    </div>
+    <div class="ta" id="lt"></div>
+  </div>
+  <div class="pn">
+    <div class="pt bk">🚫 黑名單（過濾）</div>
+    <div class="ir">
+      <input id="bi" placeholder="三立、爆料..." onkeydown="if(event.key==='Enter')aT('block')">
+      <button class="ba bk" onclick="aT('block')">封鎖</button>
+    </div>
+    <div class="ta" id="bt"></div>
+  </div>
 </div>
 
 <div class="ab">
@@ -88,6 +101,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <div class="nl" id="nl"></div>
 
 <script>
+
 var LOVE_KEY='love_list', BLOCK_KEY='block_list';
 var cL = JSON.parse(localStorage.getItem(LOVE_KEY) || '["台積電","晶片","AI"]');
 var cB = JSON.parse(localStorage.getItem(BLOCK_KEY) || '["三立","民視"]');
@@ -158,4 +172,4 @@ setInterval(()=>{ if(all.length) showSlide(all.slice(0,15)); },5000);
 </body>
 </html>`));
 
-app.listen(PORT, () => console.log('port ' + PORT));
+app.listen(PORT, () => console.log
