@@ -167,9 +167,11 @@ function showSlide(list){
     '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div>';
   document.getElementById('counter').textContent=(idx+1)+'/'+list.length;
 }
+
 setInterval(()=>{ if(all.length) showSlide(all.slice(0,15)); },5000);
 </script>
 </body>
 </html>`));
 
-app.listen(PORT, () => console.log
+app.listen(PORT, () => console.log('port ' + PORT));
+
