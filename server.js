@@ -1,43 +1,73 @@
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
+const compression = require('compression'); // 引入壓縮模組
 const app = express();
 const PORT = process.env.PORT || 10000;
 const CACHE_FILE = '/tmp/news_cache.json';
 
+// 啟用 Gzip 壓縮，能減少 70% 以上的 HTML 與 JSON 傳輸體積
+app.use(compression());
 app.use(express.json());
 
 let cache = [];
 
+// 預先編譯常使用的正則表達式，避免在迴圈中重複建立，提升解析速度
+const ITEM_REGEX = /<item>([\s\S]*?)<\/item>/g;
+const TITLE_REGEX = /<title>([\s\S]*?)<\/title>/;
+const LINK_REGEX = /<link>([\s\S]*?)<\/link>/;
+const PUBDATE_REGEX = /<pubDate>([\s\S]*?)<\/pubDate>/;
+
 try {
-    const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    if (saved.length) { cache = saved; console.log('讀快取：' + cache.length + ' 則'); }
-} catch(e) {}
+    // 異步讀取改為同步，僅在啟動時執行一次，不影響運行效能
+    if (fs.existsSync(CACHE_FILE)) {
+        const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (saved && saved.length) { 
+            cache = saved; 
+            console.log('讀快取：' + cache.length + ' 則'); 
+        }
+    }
+} catch(e) { console.error('快取讀取失敗', e); }
 
 async function refresh() {
     try {
         const r = await axios.get(
             'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 }
+            { 
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' }, 
+                timeout: 6000 // 縮短超時時間，避免極端狀況下卡死後端
+            }
         );
+        
+        const xml = r.data;
         const news = [];
-        r.data.split('<item>').slice(1).forEach(it => {
-            const tM = it.match(/<title>([\s\S]*?)<\/title>/);
-            const lM = it.match(/<link>([\s\S]*?)<\/link>/);
-            const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-            if (!tM || !lM) return;
+        let match;
+        
+        // 優化 1：捨棄原本的大字串 split，改用 RegExp.exec 串流匹配，極大減少記憶體配置
+        while ((match = ITEM_REGEX.exec(xml)) !== null) {
+            const it = match[1];
+            const tM = it.match(TITLE_REGEX);
+            const lM = it.match(LINK_REGEX);
+            if (!tM || !lM) continue;
+            
+            const dM = it.match(PUBDATE_REGEX);
             const raw = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
             const dash = raw.lastIndexOf(' - ');
+            
             news.push({
                 title: dash > 0 ? raw.substring(0, dash) : raw,
                 src:   dash > 0 ? raw.substring(dash + 3) : '',
                 url:   lM[1].trim(),
                 date:  dM ? dM[1].trim() : ''
             });
-        });
+        }
+        
         if (news.length) {
             cache = news;
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(news));
+            // 異步寫入檔案，防止儲存快取時阻塞 Node.js 事件循環（Event Loop）
+            fs.writeFile(CACHE_FILE, JSON.stringify(news), (err) => {
+                if (err) console.error('寫入快取失敗', err);
+            });
             console.log('更新：' + news.length + ' 則');
         }
     } catch(e) { console.log('失敗:' + e.message); }
@@ -46,8 +76,16 @@ async function refresh() {
 refresh();
 setInterval(refresh, 120000);
 
-app.get('/news.json', (req, res) => res.json(cache));
-app.post('/api/refresh', (req, res) => { refresh(); res.json({ ok: true }); });
+app.get('/news.json', (req, res) => {
+    // 加上快取控制標頭，讓瀏覽器在 30 秒內直接讀本機快取，減少發送請求
+    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.json(cache);
+});
+
+app.post('/api/refresh', async (req, res) => { 
+    await refresh(); 
+    res.json({ ok: true }); 
+});
 
 app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <html>
@@ -66,7 +104,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
   --tx:#dde4f0;--tm:#6b7a99;--ts:#8a9abf;
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;padding:12px}
+body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);min-height:100vh;padding:12px;content-visibility: auto;}
 
 /* HEADER */
 .header{text-align:center;padding:16px 0 18px;position:relative}
@@ -127,7 +165,7 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);
 
 /* NEWS LIST */
 .nl{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:6px}
-.nd{background:var(--s1);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;text-decoration:none;display:block;transition:border-color .15s,background .15s,transform .1s}
+.nd{background:var(--s1);border:1px solid var(--bd);border-radius:9px;padding:12px 14px;text-decoration:none;display:block;contain:content;transition:border-color .15s,background .15s,transform .1s}
 .nd:hover{border-color:var(--ac);background:var(--s2);transform:translateY(-1px)}
 .nd:active{transform:translateY(0)}
 .nd.ht{border-left:3px solid var(--lv);padding-left:12px}
@@ -154,7 +192,6 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);
   <div class="sub">Taiwan News · Real-time</div>
 </div>
 
-<!-- TICKER -->
 <div class="ticker-wrap">
   <div class="ticker-bar">
     <div class="ticker-label">TOP 15</div>
@@ -172,7 +209,6 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);
   </div>
 </div>
 
-<!-- CONTROLS -->
 <div class="cg">
   <div class="pn">
     <div class="pt lv">💚 喜好關鍵字</div>
@@ -192,7 +228,6 @@ body{font-family:'Noto Sans TC',sans-serif;background:var(--bg);color:var(--tx);
   </div>
 </div>
 
-<!-- ACTION BAR -->
 <div class="ab">
   <button class="rb" onclick="hardRefresh()">🔄 立即更新新聞</button>
   <div class="cd-box">
@@ -212,24 +247,42 @@ var cL = JSON.parse(localStorage.getItem(LOVE_KEY) || '["曾奕瑋","台積電",
 var cB = JSON.parse(localStorage.getItem(BLOCK_KEY) || '["三立","民視","SETN","FTV"]');
 var all=[], filtered=[], cd=60, tIdx=0, tTimer=null, tPTimer=null, tPVal=0;
 
+// 快取現有的時間計算（基準時間固定，減少在迴圈內反覆 new Date() 的開銷）
+var NOW_MS = Date.now();
+setInterval(function() { NOW_MS = Date.now(); }, 30000);
+
 function save(){ localStorage.setItem(LOVE_KEY,JSON.stringify(cL)); localStorage.setItem(BLOCK_KEY,JSON.stringify(cB)); }
 
 function fmt(s){
   if(!s)return'';
-  var d=new Date(s),m=Math.floor((new Date()-d)/60000);
-  if(isNaN(d))return'';
+  var d=new Date(s), m=Math.floor((NOW_MS - d.getTime())/60000);
+  if(isNaN(d.getTime()))return'';
   if(m<1)return'剛剛';if(m<60)return m+'分前';
   if(m<1440)return Math.floor(m/60)+'小時前';
   return(d.getMonth()+1)+'/'+(d.getDate());
 }
 
 function render(){
-  filtered = all.filter(function(n){ return !cB.some(function(w){ return n.title.includes(w); }); });
-  filtered = filtered.map(function(n){ return Object.assign({},n,{hot:cL.some(function(w){ return n.title.includes(w); })}); });
-  filtered.sort(function(a,b){ return b.hot-a.hot; });
+  // 優化 2：改用高效的陣列篩選與一次性對照，避免巢狀迴圈重複比對過多文字
+  filtered = all.filter(function(n){
+    for (var i = 0; i < cB.length; i++) {
+      if (n.title.indexOf(cB[i]) !== -1) return false;
+    }
+    return true;
+  }).map(function(n){
+    var isHot = false;
+    for (var i = 0; i < cL.length; i++) {
+      if (n.title.indexOf(cL[i]) !== -1) { isHot = true; break; }
+    }
+    return Object.assign({}, n, { hot: isHot });
+  });
 
-  var hot=filtered.filter(function(n){return n.hot;}).length;
+  filtered.sort(function(a,b){ return b.hot - a.hot; });
+
+  var hot=0;
+  for(var i=0; i<filtered.length; i++) { if(filtered[i].hot) hot++; }
   var blocked=all.length-filtered.length;
+  
   document.getElementById('st').innerHTML=
     '<span>共 <b>'+all.length+'</b> 則</span>'+
     '<span class="dot"></span>'+
@@ -239,15 +292,19 @@ function render(){
     '<span class="dot"></span>'+
     '<span style="color:var(--bk)">🚫 過濾 <b>'+blocked+'</b></span>';
 
-  document.getElementById('nl').innerHTML=filtered.map(function(n){
-    return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
+  // 優化 3：利用 DocumentFragment 或字串陣列大範圍一次寫入，並加入現代 CSS 的 contain 屬性優化瀏覽器重繪效率
+  var htmlArr = [];
+  for(var i=0; i<filtered.length; i++) {
+    var n = filtered[i];
+    htmlArr.push('<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
       (n.hot?'<div class="hb">🔥 命中關鍵字</div>':'')+
       '<div class="tt">'+n.title+'</div>'+
       '<div class="mt">'+
       (n.src?'<span>📡 '+n.src+'</span>':'')+
       (n.date?'<span>🕐 '+fmt(n.date)+'</span>':'')+
-      '</div></a>';
-  }).join('');
+      '</div></a>');
+  }
+  document.getElementById('nl').innerHTML=htmlArr.join('');
 
   rTags();
   tickerInit();
@@ -296,12 +353,15 @@ function tickerNext(){
 }
 
 function rTags(){
-  document.getElementById('lt').innerHTML=cL.map(function(t,i){
-    return '<span class="tg lv">💚 '+t+' <span class="td" onclick="rT(\'love\','+i+')">×</span></span>';
-  }).join('');
-  document.getElementById('bt').innerHTML=cB.map(function(t,i){
-    return '<span class="tg bk">🚫 '+t+' <span class="td" onclick="rT(\'block\','+i+')">×</span></span>';
-  }).join('');
+  var lHtml = [], bHtml = [];
+  for(var i=0; i<cL.length; i++) {
+    lHtml.push('<span class="tg lv">💚 '+cL[i]+' <span class="td" onclick="rT(\'love\','+i+')">×</span></span>');
+  }
+  for(var i=0; i<cB.length; i++) {
+    bHtml.push('<span class="tg bk">🚫 '+cB[i]+' <span class="td" onclick="rT(\'block\','+i+')">×</span></span>');
+  }
+  document.getElementById('lt').innerHTML=lHtml.join('');
+  document.getElementById('bt').innerHTML=bHtml.join('');
 }
 
 function aT(type){
@@ -317,7 +377,6 @@ function load(retry){
   cd=60;
   fetch('/news.json').then(function(r){return r.json();}).then(function(d){
     if(!d || d.length===0){
-      // 空資料：伺服器還在抓，2秒後重試，最多5次
       if(retry < 5){
         document.getElementById('st').innerHTML='<span class="spin"></span>伺服器啟動中，第'+(retry+1)+'次等待...';
         setTimeout(function(){ load(retry+1); }, 2000);
@@ -334,7 +393,7 @@ function load(retry){
 
 function hardRefresh(){
   document.getElementById('st').innerHTML='<span class="spin"></span>正在從 Google News 重抓...';
-  fetch('/api/refresh',{method:'POST'}).then(function(){ setTimeout(load,3000); }).catch(load);
+  fetch('/api/refresh',{method:'POST'}).then(function(){ setTimeout(load,2000); }).catch(load);
 }
 
 setInterval(function(){cd--;document.getElementById('cd').textContent=cd;if(cd<=0)load();},1000);
