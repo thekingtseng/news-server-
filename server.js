@@ -23,15 +23,15 @@ async function refresh() {
             const lM = it.match(/<link>([\s\S]*?)<\/link>/);
             const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
             if (!tM || !lM) continue;
-            const raw   = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
-            const dash  = raw.lastIndexOf(' - ');
+            const raw  = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
+            const dash = raw.lastIndexOf(' - ');
             const title = dash > 0 ? raw.substring(0, dash) : raw;
             const src   = dash > 0 ? raw.substring(dash + 3) : '';
             news.push({ title, url: lM[1].trim(), src, date: dM ? dM[1].trim() : '' });
         }
-        if (news.length) { cache = news; }
+        if (news.length) cache = news;
         console.log('抓到 ' + news.length + ' 則');
-    } catch(e) { console.log('抓取失敗: ' + e.message); }
+    } catch(e) { console.log('失敗: ' + e.message); }
 }
 
 refresh();
@@ -50,10 +50,7 @@ app.post('/api/config', (req, res) => {
     res.json({ ok: true });
 });
 
-app.post('/api/refresh', (req, res) => {
-    refresh();
-    res.json({ ok: true });
-});
+app.post('/api/refresh', (req, res) => { refresh(); res.json({ ok: true }); });
 
 app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <html>
@@ -66,22 +63,6 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 body{background:#0d0f14;color:#e2e8f0;font-family:sans-serif;padding:10px}
 h1{text-align:center;font-size:17px;color:#fff;margin-bottom:12px}
 h1 b{color:#3b82f6}
-
-/* SLIDESHOW - 純文字版 */
-#sw{position:relative;max-width:860px;margin:0 auto 14px;border-radius:10px;overflow:hidden;background:#161a23;border:1px solid #2a3044;min-height:120px}
-.sl{display:none;padding:24px 20px 20px}
-.sl.on{display:block}
-.sl .hot{font-size:11px;font-weight:700;color:#10b981;margin-bottom:6px}
-.sl a{font-size:18px;font-weight:700;color:#fff;text-decoration:none;line-height:1.45;display:block}
-.sl a:hover{color:#3b82f6}
-.sl .src{font-size:12px;color:#64748b;margin-top:8px}
-#sc{position:absolute;top:10px;right:12px;background:rgba(59,130,246,.2);color:#3b82f6;font-size:12px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid rgba(59,130,246,.3);display:none}
-#sp{position:absolute;bottom:0;left:0;height:3px;background:#3b82f6;transition:width .1s linear}
-.nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(59,130,246,.15);color:#3b82f6;border:1px solid rgba(59,130,246,.3);font-size:22px;width:34px;height:34px;border-radius:50%;cursor:pointer;display:none;align-items:center;justify-content:center}
-.nav:hover{background:#3b82f6;color:#fff}
-#pb{left:8px}#nb{right:8px}
-
-/* CONTROLS */
 .cg{display:grid;grid-template-columns:1fr 1fr;gap:10px;max-width:860px;margin:0 auto 12px}
 @media(max-width:540px){.cg{grid-template-columns:1fr}}
 .pn{background:#161a23;border:1px solid #2a3044;border-radius:8px;padding:11px}
@@ -97,20 +78,14 @@ h1 b{color:#3b82f6}
 .tg.lv{background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)}
 .tg.bk{background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
 .td{cursor:pointer;font-size:13px}
-
-/* ACTION BAR */
 .ab{max-width:860px;margin:0 auto 10px;display:flex;gap:10px;align-items:center}
 .rb{flex:1;background:#3b82f6;color:#fff;border:none;border-radius:7px;padding:11px;font-size:15px;font-weight:700;cursor:pointer}
 .rb:hover{opacity:.85}
 .cb{background:#161a23;border:1px solid #2a3044;border-radius:7px;padding:8px 12px;text-align:center;min-width:68px}
 .cb .n{font-size:20px;font-weight:700;color:#3b82f6;line-height:1}
 .cb .l{font-size:10px;color:#64748b;margin-top:1px}
-
-/* STATS */
 .sb{max-width:860px;margin:0 auto 10px;background:#161a23;border:1px solid #2a3044;border-radius:6px;padding:7px 12px;font-size:12px;color:#64748b}
 .sb b{color:#e2e8f0}
-
-/* LIST */
 .nl{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:6px}
 .nd{background:#161a23;border:1px solid #2a3044;border-radius:7px;padding:11px 13px;text-decoration:none;display:block;transition:border-color .15s}
 .nd:hover{border-color:#3b82f6}
@@ -124,14 +99,6 @@ h1 b{color:#3b82f6}
 </head>
 <body>
 <h1>🎯 台灣新聞 <b>即時列表</b></h1>
-
-<div id="sw">
-  <div style="padding:24px;color:#64748b;font-size:13px"><span class="spin"></span>載入中...</div>
-  <div id="sc"></div>
-  <button class="nav" id="pb" onclick="sP()">&#8249;</button>
-  <button class="nav" id="nb" onclick="sN()">&#8250;</button>
-  <div id="sp" style="width:0%"></div>
-</div>
 
 <div class="cg">
   <div class="pn">
@@ -164,7 +131,7 @@ h1 b{color:#3b82f6}
 <div class="nl" id="nl"></div>
 
 <script>
-var all=[], cL=[], cB=[], sI=0, sT=null, pT=null, pV=0, cd=60;
+var cL=[], cB=[], cd=60;
 
 function fmt(s){
   if(!s)return'';
@@ -174,41 +141,6 @@ function fmt(s){
   if(m<1440)return Math.floor(m/60)+'小時前';
   return(d.getMonth()+1)+'/'+(d.getDate());
 }
-
-function bSS(arr){
-  var sl=arr.slice(0,15);
-  var w=document.getElementById('sw');
-  w.querySelectorAll('.sl').forEach(function(e){e.remove();});
-  var sc=document.getElementById('sc'),pb=document.getElementById('pb'),nb=document.getElementById('nb');
-  sl.forEach(function(n,i){
-    var d=document.createElement('div');
-    d.className='sl'+(i===0?' on':'');
-    d.innerHTML=(n.hot?'<div class="hot">🔥 命中關鍵字</div>':'')+
-      '<a href="'+n.url+'" target="_blank">'+n.title+'</a>'+
-      '<div class="src">'+(n.src?'📡 '+n.src:'')+(n.date?' · '+fmt(n.date):'')+
-      '</div>';
-    w.insertBefore(d,sc);
-  });
-  sI=0;
-  if(sl.length>1){sc.style.display='block';pb.style.display='flex';nb.style.display='flex';}
-  uC();sA();
-}
-
-function uC(){var t=document.querySelectorAll('.sl').length;document.getElementById('sc').textContent=(sI+1)+'/'+t;}
-function sS(i){
-  var sl=document.querySelectorAll('.sl');if(!sl.length)return;
-  sl.forEach(function(e){e.classList.remove('on');});
-  sI=((i%sl.length)+sl.length)%sl.length;
-  sl[sI].classList.add('on');uC();
-}
-function sP(){cA();sS(sI-1);sA();}
-function sN(){cA();sS(sI+1);sA();}
-function sA(){
-  cA();pV=0;document.getElementById('sp').style.width='0%';
-  pT=setInterval(function(){pV+=2;document.getElementById('sp').style.width=Math.min(pV,100)+'%';},100);
-  sT=setTimeout(function(){sS(sI+1);sA();},5000);
-}
-function cA(){clearTimeout(sT);clearInterval(pT);}
 
 function rTags(){
   document.getElementById('lt').innerHTML=cL.map(function(t,i){
@@ -220,7 +152,7 @@ function rTags(){
 }
 
 function aT(type){
-  var id=type==='love'?'li':'bi',v=document.getElementById(id).value.trim();
+  var id=type==='love'?'li':'bi', v=document.getElementById(id).value.trim();
   if(!v)return;
   if(type==='love')cL.push(v);else cB.push(v);
   document.getElementById(id).value='';sC();
@@ -236,16 +168,15 @@ function load(force){
   cd=60;
   if(force){fetch('/api/refresh',{method:'POST'}).catch(function(){});}
   fetch('/news.json').then(function(r){return r.json();}).then(function(d){
-    all=d.news||[];cL=d.loveList||[];cB=d.blockList||[];
+    var news=d.news||[];cL=d.loveList||[];cB=d.blockList||[];
     rTags();
-    document.getElementById('st').innerHTML='共 <b>'+all.length+'</b> 則　❤️ 命中 <b>'+all.filter(function(n){return n.hot;}).length+'</b> 則　🚫 已過濾';
-    bSS(all);
-    document.getElementById('nl').innerHTML=all.map(function(n){
+    var hot=news.filter(function(n){return n.hot;}).length;
+    document.getElementById('st').innerHTML='共 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
+    document.getElementById('nl').innerHTML=news.map(function(n){
       return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
         (n.hot?'<div class="hb">🔥 命中</div>':'')+
         '<div class="tt">'+n.title+'</div>'+
-        '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div>'+
-        '</a>';
+        '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div></a>';
     }).join('');
   }).catch(function(){
     document.getElementById('st').innerHTML='<span style="color:#ef4444">❌ 失敗，請重試</span>';
