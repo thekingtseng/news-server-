@@ -8,6 +8,11 @@ app.use(express.json());
 let blockList = ['三立', '民視', 'SETN', 'FTV'];
 let loveList = ['正妹', '台積電', '晶片', 'AI', '曾奕瑋'];
 
+// 快取：避免每次都重打 Google，60秒內直接回傳舊資料
+let cache = null;
+let cacheTime = 0;
+const CACHE_TTL = 55 * 1000; // 55秒快取
+
 function extractImage(itemText) {
     const mediaMatch = itemText.match(/media:content[^>]+url="([^"]+)"/);
     if (mediaMatch) return mediaMatch[1];
@@ -24,93 +29,130 @@ function extractSource(title) {
     return '';
 }
 
+async function fetchAllNews() {
+    const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+    const TIMEOUT = 8000; // 每個請求最多等 8 秒
+
+    let urls = [
+        'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+        'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFZ4ZERCV0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+        'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFp4WkRjU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+        'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRGR6TVdZU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+        'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNR3B6YldZd0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+        'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRWx6Y0d3U0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'
+    ];
+
+    loveList.forEach(keyword => {
+        const encodedKeyword = encodeURIComponent(keyword);
+        urls.push('https://news.google.com/rss/search?q=' + encodedKeyword + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant');
+    });
+
+    // 每個請求設定 8 秒 timeout，超時自動跳過
+    const requests = urls.map(url =>
+        axios.get(url, {
+            headers: { 'User-Agent': userAgent },
+            timeout: TIMEOUT
+        }).catch(() => null)
+    );
+
+    const responses = await Promise.all(requests);
+
+    let allItems = [];
+    responses.forEach(response => {
+        if (response && response.data) {
+            const items = response.data.split('<item>');
+            for (let i = 1; i < items.length; i++) {
+                allItems.push(items[i]);
+            }
+        }
+    });
+
+    let totalCount = allItems.length;
+    let blockedCount = 0;
+    let lovedCount = 0;
+    let finalNewsList = [];
+    const seenUrls = new Set();
+
+    allItems.forEach(item => {
+        const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
+        const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
+        const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+
+        if (titleMatch && linkMatch) {
+            const rawTitle = titleMatch[1].replace('<![CDATA[', '').replace(']]>', '').trim();
+            const link = linkMatch[1].trim();
+            const pubDate = pubDateMatch ? pubDateMatch[1].trim() : null;
+
+            if (seenUrls.has(link)) { totalCount--; return; }
+
+            const isBlocked = blockList.some(word => rawTitle.includes(word));
+            if (isBlocked) { blockedCount++; return; }
+
+            const isLoved = loveList.some(word => rawTitle.includes(word));
+            if (isLoved) lovedCount++;
+
+            const image = extractImage(item);
+            const source = extractSource(rawTitle);
+            const title = source ? rawTitle.replace(' - ' + source, '') : rawTitle;
+
+            seenUrls.add(link);
+            finalNewsList.push({ title, link, isLoved, image, source, pubDate });
+        }
+    });
+
+    finalNewsList.sort((a, b) => {
+        if (b.isLoved !== a.isLoved) return b.isLoved - a.isLoved;
+        const ta = a.pubDate ? new Date(a.pubDate) : 0;
+        const tb = b.pubDate ? new Date(b.pubDate) : 0;
+        return tb - ta;
+    });
+
+    return {
+        stats: { total: totalCount, blocked: blockedCount, loved: lovedCount, visible: finalNewsList.length },
+        news: finalNewsList,
+        blockList,
+        loveList
+    };
+}
+
 app.get('/api/news', async (req, res) => {
     try {
-        const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
+        const now = Date.now();
+        const forceRefresh = req.query.refresh === '1';
 
-        let urls = [
-            'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFZ4ZERCV0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRFp4WkRjU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRGR6TVdZU0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNR3B6YldZd0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRWx6Y0d3U0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'
-        ];
+        // 有快取且未過期 → 直接回傳，不打 Google
+        if (!forceRefresh && cache && (now - cacheTime) < CACHE_TTL) {
+            return res.json({ ...cache, cached: true });
+        }
 
-        loveList.forEach(keyword => {
-            const encodedKeyword = encodeURIComponent(keyword);
-            urls.push('https://news.google.com/rss/search?q=' + encodedKeyword + '&hl=zh-TW&gl=TW&ceid=TW:zh-Hant');
-        });
-
-        const requests = urls.map(url =>
-            axios.get(url, { headers: { 'User-Agent': userAgent } }).catch(() => null)
-        );
-        const responses = await Promise.all(requests);
-
-        let allItems = [];
-        responses.forEach(response => {
-            if (response && response.data) {
-                const items = response.data.split('<item>');
-                for (let i = 1; i < items.length; i++) {
-                    allItems.push(items[i]);
-                }
-            }
-        });
-
-        let totalCount = allItems.length;
-        let blockedCount = 0;
-        let lovedCount = 0;
-        let finalNewsList = [];
-        const seenUrls = new Set();
-
-        allItems.forEach(item => {
-            const titleMatch = item.match(/<title>([\s\S]*?)<\/title>/);
-            const linkMatch = item.match(/<link>([\s\S]*?)<\/link>/);
-            const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-
-            if (titleMatch && linkMatch) {
-                const rawTitle = titleMatch[1].replace('<![CDATA[', '').replace(']]>', '').trim();
-                const link = linkMatch[1].trim();
-                const pubDate = pubDateMatch ? pubDateMatch[1].trim() : null;
-
-                if (seenUrls.has(link)) { totalCount--; return; }
-
-                const isBlocked = blockList.some(word => rawTitle.includes(word));
-                if (isBlocked) { blockedCount++; return; }
-
-                const isLoved = loveList.some(word => rawTitle.includes(word));
-                if (isLoved) lovedCount++;
-
-                const image = extractImage(item);
-                const source = extractSource(rawTitle);
-                const title = source ? rawTitle.replace(' - ' + source, '') : rawTitle;
-
-                seenUrls.add(link);
-                finalNewsList.push({ title, link, isLoved, image, source, pubDate });
-            }
-        });
-
-        finalNewsList.sort((a, b) => {
-            if (b.isLoved !== a.isLoved) return b.isLoved - a.isLoved;
-            const ta = a.pubDate ? new Date(a.pubDate) : 0;
-            const tb = b.pubDate ? new Date(b.pubDate) : 0;
-            return tb - ta;
-        });
-
-        res.json({
-            stats: { total: totalCount, blocked: blockedCount, loved: lovedCount, visible: finalNewsList.length },
-            news: finalNewsList,
-            blockList,
-            loveList
-        });
+        const data = await fetchAllNews();
+        cache = data;
+        cacheTime = now;
+        res.json({ ...data, cached: false });
     } catch (error) {
+        // 發生錯誤時，如果有舊快取就回傳舊的，避免白畫面
+        if (cache) {
+            return res.json({ ...cache, cached: true, error: error.message });
+        }
         res.status(500).json({ error: error.message });
     }
+});
+
+// 背景預熱：伺服器啟動後馬上抓一次，讓第一個用戶不用等
+fetchAllNews().then(data => {
+    cache = data;
+    cacheTime = Date.now();
+    console.log('預熱完成，已快取 ' + data.news.length + ' 則新聞');
+}).catch(err => {
+    console.log('預熱失敗：' + err.message);
 });
 
 app.post('/api/config', (req, res) => {
     if (req.body.blockList) blockList = req.body.blockList;
     if (req.body.loveList) loveList = req.body.loveList;
+    // 設定變更 → 清除快取，下次強制重抓
+    cache = null;
+    cacheTime = 0;
     res.json({ success: true, blockList, loveList });
 });
 
@@ -134,7 +176,6 @@ app.get('/', (req, res) => {
         .header h1 { font-size: 22px; font-weight: 700; letter-spacing: 1px; }
         .header h1 span { color: var(--accent); }
 
-        /* SLIDESHOW */
         #slideshow-wrap { position: relative; width: 100%; max-width: 860px; margin: 0 auto 20px; border-radius: 12px; overflow: hidden; background: var(--surface); box-shadow: 0 0 30px rgba(0,0,0,0.5); min-height: 260px; }
         .slide { display: none; position: relative; width: 100%; }
         .slide.active { display: block; }
@@ -152,7 +193,6 @@ app.get('/', (req, res) => {
         .slide-nav.prev { left: 10px; }
         .slide-nav.next { right: 10px; }
 
-        /* CONTROLS */
         .controls-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 860px; margin: 0 auto 16px; }
         @media(max-width:600px) { .controls-grid { grid-template-columns: 1fr; } }
         .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
@@ -171,7 +211,6 @@ app.get('/', (req, res) => {
         .tag.block { background: rgba(239,68,68,0.12); color: var(--block); border: 1px solid rgba(239,68,68,0.3); }
         .tag-del { cursor: pointer; font-size: 14px; line-height: 1; }
 
-        /* ACTION BAR */
         .action-bar { max-width: 860px; margin: 0 auto 16px; display: flex; align-items: center; gap: 12px; }
         .btn-refresh { flex: 1; background: var(--accent); color: #fff; border: none; border-radius: 8px; padding: 12px; font-size: 15px; font-weight: 700; cursor: pointer; }
         .btn-refresh:hover { opacity: 0.85; }
@@ -179,13 +218,11 @@ app.get('/', (req, res) => {
         .countdown-box .num { font-size: 22px; font-weight: 700; color: var(--accent); line-height: 1; }
         .countdown-box .lbl { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
 
-        /* STATS */
         .stats-bar { max-width: 860px; margin: 0 auto 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 16px; font-size: 13px; color: var(--text-muted); display: flex; gap: 16px; flex-wrap: wrap; }
         .stats-bar span b { color: var(--text); }
 
-        /* NEWS LIST */
         .news-list { max-width: 860px; margin: 0 auto; display: flex; flex-direction: column; gap: 10px; }
-        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: flex; gap: 0; overflow: hidden; text-decoration: none; transition: border-color 0.2s; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; display: flex; overflow: hidden; text-decoration: none; transition: border-color 0.2s; }
         .card:hover { border-color: var(--accent); }
         .card.hot { border-color: rgba(16,185,129,0.4); }
         .card.hot:hover { border-color: var(--love); }
@@ -196,10 +233,10 @@ app.get('/', (req, res) => {
         .card-title { font-size: 14px; font-weight: 600; line-height: 1.5; color: var(--text); }
         .card-meta { display: flex; gap: 10px; margin-top: 6px; font-size: 11px; color: var(--text-muted); flex-wrap: wrap; }
 
-        /* LOADING */
         .loading { text-align: center; padding: 40px; color: var(--text-muted); font-size: 14px; }
         .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 10px; }
         @keyframes spin { to { transform: rotate(360deg); } }
+        .cached-badge { font-size: 11px; color: var(--love); margin-left: 8px; }
     </style>
 </head>
 <body>
@@ -234,19 +271,19 @@ app.get('/', (req, res) => {
 </div>
 
 <div class="action-bar">
-    <button class="btn-refresh" onclick="fetchNews()">🔄 立即手動更新新聞</button>
+    <button class="btn-refresh" onclick="fetchNews(true)">🔄 立即手動更新新聞</button>
     <div class="countdown-box">
         <div class="num" id="cd">60</div>
         <div class="lbl">自動刷新</div>
     </div>
 </div>
 
-<div class="stats-bar" id="stats"><span>⏳ 正在從 Google News 全分類撈取資料...</span></div>
+<div class="stats-bar" id="stats"><span>⏳ 正在載入...</span></div>
 <div class="news-list" id="news-list"></div>
 
 <script>
     var currentBlock = [], currentLove = [];
-    var slideData = [], slideIndex = 0;
+    var slideIndex = 0;
     var slideTimer = null, progressTimer = null, progressVal = 0;
     var cd = 60;
 
@@ -264,18 +301,14 @@ app.get('/', (req, res) => {
 
     function buildSlideshow(newsArr) {
         var slides = newsArr.slice(0, 15);
-        slideData = slides;
         slideIndex = 0;
         var wrap = document.getElementById('slideshow-wrap');
 
-        // remove old slides
-        var old = wrap.querySelectorAll('.slide');
-        old.forEach(function(el) { el.remove(); });
+        wrap.querySelectorAll('.slide').forEach(function(el) { el.remove(); });
 
         var counter = document.getElementById('slide-counter');
         var prevBtn = document.getElementById('prev-btn');
         var nextBtn = document.getElementById('next-btn');
-        var progress = document.getElementById('slide-progress');
 
         slides.forEach(function(n, i) {
             var div = document.createElement('div');
@@ -289,8 +322,10 @@ app.get('/', (req, res) => {
                 '<div class="slide-overlay">' +
                 (n.isLoved ? '<div class="slide-badge">🔥 命中喜好關鍵字</div>' : '') +
                 '<a class="slide-title" href="' + n.link + '" target="_blank" rel="noopener">' + n.title + '</a>' +
-                '<div class="slide-source">' + (n.source ? '📡 ' + n.source : '') + (n.pubDate ? '　🕐 ' + formatDate(n.pubDate) : '') + '</div>' +
-                '</div>';
+                '<div class="slide-source">' +
+                (n.source ? '📡 ' + n.source : '') +
+                (n.pubDate ? '　🕐 ' + formatDate(n.pubDate) : '') +
+                '</div></div>';
 
             wrap.insertBefore(div, counter);
         });
@@ -328,7 +363,7 @@ app.get('/', (req, res) => {
         document.getElementById('slide-progress').style.width = '0%';
 
         progressTimer = setInterval(function() {
-            progressVal += 100 / 50;
+            progressVal += 2;
             if (progressVal > 100) progressVal = 100;
             document.getElementById('slide-progress').style.width = progressVal + '%';
         }, 100);
@@ -344,11 +379,13 @@ app.get('/', (req, res) => {
         clearInterval(progressTimer);
     }
 
-    function fetchNews() {
-        document.getElementById('stats').innerHTML = '<span>⏳ 正在從 Google News 全分類撈取資料...</span>';
+    function fetchNews(forceRefresh) {
+        document.getElementById('stats').innerHTML = '<span>⏳ 載入中...</span>';
         cd = 60;
 
-        fetch('/api/news')
+        var url = forceRefresh ? '/api/news?refresh=1' : '/api/news';
+
+        fetch(url)
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 currentBlock = data.blockList;
@@ -356,19 +393,20 @@ app.get('/', (req, res) => {
                 renderTags();
 
                 var s = data.stats;
+                var cachedLabel = data.cached ? '<span class="cached-badge">⚡ 快取</span>' : '';
                 document.getElementById('stats').innerHTML =
                     '<span>📰 撈取 <b>' + s.total + '</b> 則</span>' +
                     '<span>👁️ 顯示 <b>' + s.visible + '</b> 則</span>' +
                     '<span>❤️ 命中 <b>' + s.loved + '</b> 則</span>' +
-                    '<span>🚫 蒸發 <b>' + s.blocked + '</b> 則</span>';
+                    '<span>🚫 蒸發 <b>' + s.blocked + '</b> 則</span>' +
+                    cachedLabel;
 
                 buildSlideshow(data.news);
 
                 var html = '';
                 data.news.forEach(function(n) {
                     var thumbHtml = n.image
-                        ? '<img class="card-thumb" src="' + n.image + '" loading="lazy" alt="" onerror="this.parentNode.querySelector(\'.card-thumb-placeholder\').style.display=\'flex\';this.style.display=\'none\'">' +
-                          '<div class="card-thumb-placeholder" style="display:none">📰</div>'
+                        ? '<img class="card-thumb" src="' + n.image + '" loading="lazy" alt="" onerror="this.style.display=\'none\'">'
                         : '<div class="card-thumb-placeholder">📰</div>';
 
                     html += '<a class="card ' + (n.isLoved ? 'hot' : '') + '" href="' + n.link + '" target="_blank" rel="noopener">' +
@@ -418,16 +456,16 @@ app.get('/', (req, res) => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ blockList: currentBlock, loveList: currentLove })
-        }).then(function() { fetchNews(); });
+        }).then(function() { fetchNews(true); });
     }
 
     setInterval(function() {
         cd--;
         document.getElementById('cd').textContent = cd;
-        if (cd <= 0) fetchNews();
+        if (cd <= 0) fetchNews(false);
     }, 1000);
 
-    window.onload = fetchNews;
+    window.onload = function() { fetchNews(false); };
 </script>
 </body>
 </html>`;
