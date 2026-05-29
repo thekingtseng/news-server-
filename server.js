@@ -13,7 +13,7 @@ let cache = null;
 let cacheTime = 0;
 const CACHE_TTL = 55 * 1000; // 55 秒快取
 
-// 安全的圖片擷取 Regex
+// 安全的圖片擷取 Regex (不分大小寫)
 function extractImage(itemText) {
     const mediaMatch = itemText.match(/media:content[^>]+url=["']([^"']+)["']/i);
     if (mediaMatch) return mediaMatch[1];
@@ -32,7 +32,7 @@ function extractSource(title) {
 
 async function fetchAllNews() {
     const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36';
-    const TIMEOUT = 3000; // 縮短為 3 秒，避免木桶效應卡死
+    const TIMEOUT = 3000; // 縮短至 3 秒，避免單一請求卡死整體
 
     // 基本訂閱源 (6個)
     let urls = [
@@ -44,7 +44,7 @@ async function fetchAllNews() {
         'https://news.google.com/rss/topics/CAAqIQgKIhtDQkFTRGdvSUwyMHZNRWx6Y0d3U0VnSlVVa0F0S0FBUAE?hl=zh-TW&gl=TW&ceid=TW:zh-Hant'
     ];
 
-    // 【核心優化】將所有喜好關鍵字合併成單一 Google 搜尋請求，利用 OR 語法避免多次 I/O
+    // 【極速優化】將關鍵字合併為單一搜尋請求
     if (loveList && loveList.length > 0) {
         const combinedKeyword = loveList.map(k => `(${k.trim()})`).join('OR');
         const encodedKeyword = encodeURIComponent(combinedKeyword);
@@ -55,7 +55,7 @@ async function fetchAllNews() {
         axios.get(url, {
             headers: { 'User-Agent': userAgent },
             timeout: TIMEOUT
-        }).catch(() => null) // 發生錯誤或超時直接回傳 null，不影響整體
+        }).catch(() => null)
     );
 
     const responses = await Promise.all(requests);
@@ -63,7 +63,6 @@ async function fetchAllNews() {
     let allItems = [];
     responses.forEach(response => {
         if (response && response.data) {
-            // 使用不分大小寫且相容屬性的規律分割 <item>
             const items = response.data.split(/<item[\s>]/i);
             for (let i = 1; i < items.length; i++) {
                 allItems.push(items[i]);
@@ -83,7 +82,7 @@ async function fetchAllNews() {
         const pubDateMatch = item.match(/<pubDate>([\s\S]*?)<\/pubDate>/i);
 
         if (titleMatch && linkMatch) {
-            const rawTitle = titleMatch[1].replace('<![CDATA--', '').replace(']]>', '').trim();
+            const rawTitle = titleMatch[1].replace('<![CDATA[', '').replace(']]>', '').trim();
             const link = linkMatch[1].trim();
             const pubDate = pubDateMatch ? pubDateMatch[1].trim() : null;
 
@@ -104,7 +103,6 @@ async function fetchAllNews() {
         }
     });
 
-    // 排序：命中喜好關鍵字置頂，其餘依時間由新到舊排序
     finalNewsList.sort((a, b) => {
         if (b.isLoved !== a.isLoved) return b.isLoved - a.isLoved;
         const ta = a.pubDate ? new Date(a.pubDate) : 0;
@@ -288,7 +286,7 @@ app.get('/', (req, res) => {
     var slideIndex = 0;
     var slideTimer = null, progressTimer = null, progressVal = 0;
     var cd = 60;
-    var globalCountdownInterval = null; // 新增全域計時器參照，防堵疊加 Bug
+    var globalCountdownInterval = null; 
 
     function formatDate(str) {
         if (!str) return '';
@@ -307,7 +305,6 @@ app.get('/', (req, res) => {
         slideIndex = 0;
         var wrap = document.getElementById('slideshow-wrap');
 
-        // 只清除舊的 slide 節點
         wrap.querySelectorAll('.slide').forEach(function(el) { el.remove(); });
 
         var counter = document.getElementById('slide-counter');
@@ -326,9 +323,9 @@ app.get('/', (req, res) => {
             var div = document.createElement('div');
             div.className = 'slide' + (i === 0 ? ' active' : '');
 
-            // 優化優化：如果圖片加載失敗，動態隱藏自己並亮起備用的 placeholder 元件，防範排版塌陷
+            // 修正破圖防護：改用全標準單引號，不再混用反引號
             var imgHtml = n.image
-                ? '<img class="slide-img" src="' + n.image + '" onerror="this.style.display=\\'none\\'; this.parentElement.querySelector(\\`.slide-img-placeholder\\`).style.display=\\`flex\\`;" alt="">' + '<div class="slide-img-placeholder" style="display:none">📰</div>'
+                ? '<img class="slide-img" src="' + n.image + '" onerror="this.style.display=\'none\'; this.parentElement.querySelector(\'.slide-img-placeholder\').style.display=\'flex\';" alt="">' + '<div class="slide-img-placeholder" style="display:none">📰</div>'
                 : '<div class="slide-img-placeholder">📰</div>';
 
             div.innerHTML = imgHtml +
@@ -396,7 +393,6 @@ app.get('/', (req, res) => {
         clearInterval(progressTimer);
     }
 
-    // 建立獨立的倒數計時重置器，解決手動觸發時重疊的問題
     function resetCountdownClock() {
         if (globalCountdownInterval) clearInterval(globalCountdownInterval);
         cd = 60;
@@ -440,7 +436,7 @@ app.get('/', (req, res) => {
                 var html = '';
                 data.news.forEach(function(n) {
                     var thumbHtml = n.image
-                        ? '<img class="card-thumb" src="' + n.image + '" loading="lazy" alt="" onerror="this.style.display=\\'none\\'; this.parentElement.querySelector(\\`.card-thumb-placeholder\\`).style.display=\\`flex\\`;">' + '<div class="card-thumb-placeholder" style="display:none">📰</div>'
+                        ? '<img class="card-thumb" src="' + n.image + '" loading="lazy" alt="" onerror="this.style.display=\'none\'; this.parentElement.querySelector(\'.card-thumb-placeholder\').style.display=\'flex\';">' + '<div class="card-thumb-placeholder" style="display:none">📰</div>'
                         : '<div class="card-thumb-placeholder">📰</div>';
 
                     html += '<a class="card ' + (n.isLoved ? 'hot' : '') + '" href="' + n.link + '" target="_blank" rel="noopener">' +
@@ -461,16 +457,16 @@ app.get('/', (req, res) => {
             .finally(function() {
                 btn.disabled = false;
                 btn.textContent = '🔄 立即手動更新新聞';
-                resetCountdownClock(); // 無論成功失敗都重置並開啟新的計時週期
+                resetCountdownClock(); 
             });
     }
 
     function renderTags() {
         document.getElementById('love-tags').innerHTML = currentLove.map(function(t, i) {
-            return '<span class="tag love">💚 ' + t + ' <span class="tag-del" onclick="removeTag(\\'love\\',' + i + ')">×</span></span>';
+            return '<span class="tag love">💚 ' + t + ' <span class="tag-del" onclick="removeTag(\'love\',' + i + ')">×</span></span>';
         }).join('');
         document.getElementById('block-tags').innerHTML = currentBlock.map(function(t, i) {
-            return '<span class="tag block">🚫 ' + t + ' <span class="tag-del" onclick="removeTag(\\'block\\',' + i + ')">×</span></span>';
+            return '<span class="tag block">🚫 ' + t + ' <span class="tag-del" onclick="removeTag(\'block\',' + i + ')">×</span></span>';
         }).join('');
     }
 
