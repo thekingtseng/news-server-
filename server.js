@@ -1,25 +1,19 @@
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
-const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
-const CACHE_FILE = path.join('/tmp', 'news_cache.json');
+const CACHE_FILE = '/tmp/news_cache.json';
 
 app.use(express.json());
 
-let blockList = ['三立', '民視', 'SETN', 'FTV'];
-let loveList  = ['台積電', '晶片', 'AI', '曾奕瑋', '正妹'];
 let cache = [];
 
-// 啟動時先從檔案讀快取，讓第一個用戶瞬間有資料
+// 啟動時讀檔案快取
 try {
     const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    if (Array.isArray(saved) && saved.length) {
-        cache = saved;
-        console.log('從檔案讀取快取：' + cache.length + ' 則');
-    }
-} catch(e) { /* 第一次沒有檔案，正常 */ }
+    if (saved.length) { cache = saved; console.log('讀快取：' + cache.length + ' 則'); }
+} catch(e) {}
 
 async function refresh() {
     try {
@@ -27,45 +21,34 @@ async function refresh() {
             'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
             { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 }
         );
-        const parts = r.data.split('<item>');
         const news = [];
-        for (let i = 1; i < parts.length; i++) {
-            const it = parts[i];
+        r.data.split('<item>').slice(1).forEach(it => {
             const tM = it.match(/<title>([\s\S]*?)<\/title>/);
             const lM = it.match(/<link>([\s\S]*?)<\/link>/);
             const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-            if (!tM || !lM) continue;
-            const raw  = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
+            if (!tM || !lM) return;
+            const raw = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
             const dash = raw.lastIndexOf(' - ');
-            const title = dash > 0 ? raw.substring(0, dash) : raw;
-            const src   = dash > 0 ? raw.substring(dash + 3) : '';
-            news.push({ title, url: lM[1].trim(), src, date: dM ? dM[1].trim() : '' });
-        }
+            news.push({
+                title: dash > 0 ? raw.substring(0, dash) : raw,
+                src:   dash > 0 ? raw.substring(dash + 3) : '',
+                url:   lM[1].trim(),
+                date:  dM ? dM[1].trim() : ''
+            });
+        });
         if (news.length) {
             cache = news;
-            // 寫檔，下次重啟直接用
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(news), 'utf8');
-            console.log('抓到 ' + news.length + ' 則，已存檔');
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(news));
+            console.log('更新：' + news.length + ' 則');
         }
-    } catch(e) { console.log('失敗: ' + e.message); }
+    } catch(e) { console.log('失敗:' + e.message); }
 }
 
 refresh();
 setInterval(refresh, 120000);
 
-app.get('/news.json', (req, res) => {
-    // 過濾和標記在這裡做，不影響 cache
-    let news = cache.filter(n => !blockList.some(w => n.title.includes(w)));
-    news = news.map(n => ({ ...n, hot: loveList.some(w => n.title.includes(w)) }));
-    news.sort((a, b) => b.hot - a.hot);
-    res.json({ news, blockList, loveList });
-});
-
-app.post('/api/config', (req, res) => {
-    if (req.body.blockList) blockList = req.body.blockList;
-    if (req.body.loveList)  loveList  = req.body.loveList;
-    res.json({ ok: true });
-});
+// 直接回傳全部，不過濾
+app.get('/news.json', (req, res) => res.json(cache));
 
 app.post('/api/refresh', (req, res) => { refresh(); res.json({ ok: true }); });
 
@@ -137,7 +120,7 @@ h1 b{color:#3b82f6}
 </div>
 
 <div class="ab">
-  <button class="rb" onclick="load(true)">🔄 立即更新</button>
+  <button class="rb" onclick="hardRefresh()">🔄 立即更新</button>
   <div class="cb">
     <div class="n" id="cd">60</div>
     <div class="l">自動刷新</div>
@@ -148,7 +131,13 @@ h1 b{color:#3b82f6}
 <div class="nl" id="nl"></div>
 
 <script>
-var cL=[], cB=[], cd=60;
+// 預設關鍵字存在 localStorage
+var LOVE_KEY='love_list', BLOCK_KEY='block_list';
+var cL = JSON.parse(localStorage.getItem(LOVE_KEY) || '["台積電","晶片","AI","曾奕瑋","正妹"]');
+var cB = JSON.parse(localStorage.getItem(BLOCK_KEY) || '["三立","民視","SETN","FTV"]');
+var all = [], cd = 60;
+
+function save(){ localStorage.setItem(LOVE_KEY,JSON.stringify(cL)); localStorage.setItem(BLOCK_KEY,JSON.stringify(cB)); }
 
 function fmt(s){
   if(!s)return'';
@@ -157,6 +146,22 @@ function fmt(s){
   if(m<1)return'剛剛';if(m<60)return m+'分前';
   if(m<1440)return Math.floor(m/60)+'小時前';
   return(d.getMonth()+1)+'/'+(d.getDate());
+}
+
+function render(){
+  // 全部在前端過濾，不打伺服器
+  var news = all.filter(function(n){ return !cB.some(function(w){ return n.title.includes(w); }); });
+  news = news.map(function(n){ return Object.assign({},n,{hot: cL.some(function(w){ return n.title.includes(w); })}); });
+  news.sort(function(a,b){ return b.hot - a.hot; });
+  var hot = news.filter(function(n){return n.hot;}).length;
+  document.getElementById('st').innerHTML='共 <b>'+all.length+'</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
+  document.getElementById('nl').innerHTML=news.map(function(n){
+    return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
+      (n.hot?'<div class="hb">🔥 命中</div>':'')+
+      '<div class="tt">'+n.title+'</div>'+
+      '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div></a>';
+  }).join('');
+  rTags();
 }
 
 function rTags(){
@@ -172,36 +177,35 @@ function aT(type){
   var id=type==='love'?'li':'bi', v=document.getElementById(id).value.trim();
   if(!v)return;
   if(type==='love')cL.push(v);else cB.push(v);
-  document.getElementById(id).value='';sC();
+  document.getElementById(id).value='';
+  save(); render();
 }
-function rT(type,i){if(type==='love')cL.splice(i,1);else cB.splice(i,1);sC();}
-function sC(){
-  fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({blockList:cB,loveList:cL})
-  }).then(function(){load(false);});
+function rT(type,i){
+  if(type==='love')cL.splice(i,1);else cB.splice(i,1);
+  save(); render();
 }
 
-function load(force){
+// 載入新聞（只抓資料，不過濾）
+function load(){
   cd=60;
-  if(force){fetch('/api/refresh',{method:'POST'}).catch(function(){});}
   fetch('/news.json').then(function(r){return r.json();}).then(function(d){
-    var news=d.news||[];cL=d.loveList||[];cB=d.blockList||[];
-    rTags();
-    var hot=news.filter(function(n){return n.hot;}).length;
-    document.getElementById('st').innerHTML='共 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
-    document.getElementById('nl').innerHTML=news.map(function(n){
-      return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
-        (n.hot?'<div class="hb">🔥 命中</div>':'')+
-        '<div class="tt">'+n.title+'</div>'+
-        '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div></a>';
-    }).join('');
+    all = d;
+    render();
   }).catch(function(){
     document.getElementById('st').innerHTML='<span style="color:#ef4444">❌ 失敗，請重試</span>';
   });
 }
 
-setInterval(function(){cd--;document.getElementById('cd').textContent=cd;if(cd<=0)load(false);},1000);
-window.onload=function(){load(false);};
+// 手動更新：叫伺服器重抓，然後重新載入
+function hardRefresh(){
+  document.getElementById('st').innerHTML='<span class="spin"></span>正在從 Google News 重抓...';
+  fetch('/api/refresh',{method:'POST'}).then(function(){
+    setTimeout(load, 3000); // 等3秒讓伺服器抓完
+  }).catch(load);
+}
+
+setInterval(function(){cd--;document.getElementById('cd').textContent=cd;if(cd<=0)load();},1000);
+window.onload=load;
 </script>
 </body>
 </html>`));
