@@ -57,7 +57,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>皇上曾奕瑋精選新聞</title>
+<title>🎯 皇上曾奕瑋精選新聞 即時列表</title>
 <style>
 /* 保留原本 CSS */
 </style>
@@ -112,7 +112,7 @@ function save(){ localStorage.setItem(LOVE_KEY,JSON.stringify(cL)); localStorage
 function fmt(s){
   if(!s)return''; var d=new Date(s),m=Math.floor((new Date()-d)/60000);
   if(isNaN(d))return''; if(m<1)return'剛剛'; if(m<60)return m+'分前';
-  if(m<1598)return Math.floor(m/60)+'小時前'; return(d.getMonth()+1)+'/'+(d.getDate());
+  if(m<1440)return Math.floor(m/60)+'小時前'; return(d.getMonth()+1)+'/'+(d.getDate());
 }
 
 function render(){
@@ -120,7 +120,7 @@ function render(){
   news = news.map(n=>Object.assign({},n,{hot:cL.some(w=>n.title.includes(w))}));
   news.sort((a,b)=>b.hot-a.hot);
   var hot = news.filter(n=>n.hot).length;
-  document.getElementById('st').innerHTML='共 <b>''+all.length+''</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
+  document.getElementById('st').innerHTML='共 <b>'+all.length+'</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
   document.getElementById('nl').innerHTML=news.map(n=>{
     return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
       (n.hot?'<div class="hb">🔥 命中</div>':'')+
@@ -157,7 +157,6 @@ function hardRefresh(){
 setInterval(()=>{cd--;document.getElementById('cd').textContent=cd;if(cd<=0)load();},1000);
 window.onload=load;
 
-// 自動播放前 15 則新聞
 function showSlide(list){
   if(!list.length)return;
   idx=(idx+1)%list.length;
@@ -168,10 +167,10 @@ function showSlide(list){
   document.getElementById('counter').textContent=(idx+1)+'/'+list.length;
 }
 
+// 每 5 秒切換一次前 15 則新聞
 setInterval(()=>{ if(all.length) showSlide(all.slice(0,15)); },5000);
 </script>
 </body>
 </html>`));
 
 app.listen(PORT, () => console.log('port ' + PORT));
-
