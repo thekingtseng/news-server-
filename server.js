@@ -8,7 +8,6 @@ app.use(express.json());
 let blockList = ['三立', '民視', 'SETN', 'FTV'];
 let loveList  = ['台積電', '晶片', 'AI', '曾奕瑋', '正妹'];
 let cache = [];
-let lastFetch = 0;
 
 async function refresh() {
     try {
@@ -23,17 +22,14 @@ async function refresh() {
             const tM = it.match(/<title>([\s\S]*?)<\/title>/);
             const lM = it.match(/<link>([\s\S]*?)<\/link>/);
             const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-            const mM = it.match(/media:content[^>]+url="([^"]+)"/)
-                    || it.match(/<enclosure[^>]+url="([^"]+)"/);
             if (!tM || !lM) continue;
             const raw   = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
             const dash  = raw.lastIndexOf(' - ');
             const title = dash > 0 ? raw.substring(0, dash) : raw;
             const src   = dash > 0 ? raw.substring(dash + 3) : '';
-            const img   = mM ? mM[1] : null;
-            news.push({ title, url: lM[1].trim(), src, date: dM ? dM[1].trim() : '', img });
+            news.push({ title, url: lM[1].trim(), src, date: dM ? dM[1].trim() : '' });
         }
-        if (news.length) { cache = news; lastFetch = Date.now(); }
+        if (news.length) { cache = news; }
         console.log('抓到 ' + news.length + ' 則');
     } catch(e) { console.log('抓取失敗: ' + e.message); }
 }
@@ -41,7 +37,6 @@ async function refresh() {
 refresh();
 setInterval(refresh, 120000);
 
-// 回傳時套用 blockList / loveList
 app.get('/news.json', (req, res) => {
     let news = cache.filter(n => !blockList.some(w => n.title.includes(w)));
     news = news.map(n => ({ ...n, hot: loveList.some(w => n.title.includes(w)) }));
@@ -52,6 +47,11 @@ app.get('/news.json', (req, res) => {
 app.post('/api/config', (req, res) => {
     if (req.body.blockList) blockList = req.body.blockList;
     if (req.body.loveList)  loveList  = req.body.loveList;
+    res.json({ ok: true });
+});
+
+app.post('/api/refresh', (req, res) => {
+    refresh();
     res.json({ ok: true });
 });
 
@@ -67,20 +67,18 @@ body{background:#0d0f14;color:#e2e8f0;font-family:sans-serif;padding:10px}
 h1{text-align:center;font-size:17px;color:#fff;margin-bottom:12px}
 h1 b{color:#3b82f6}
 
-/* SLIDESHOW */
-#sw{position:relative;max-width:860px;margin:0 auto 14px;border-radius:10px;overflow:hidden;background:#161a23;min-height:220px}
-.sl{display:none;position:relative}
+/* SLIDESHOW - 純文字版 */
+#sw{position:relative;max-width:860px;margin:0 auto 14px;border-radius:10px;overflow:hidden;background:#161a23;border:1px solid #2a3044;min-height:120px}
+.sl{display:none;padding:24px 20px 20px}
 .sl.on{display:block}
-.sl img{width:100%;height:220px;object-fit:cover;display:block}
-.sl .ph{width:100%;height:220px;background:#1e2433;display:flex;align-items:center;justify-content:center;font-size:40px;color:#2a3044}
-.sl .ov{position:absolute;bottom:0;left:0;right:0;background:linear-gradient(transparent,rgba(0,0,0,.88));padding:28px 14px 12px}
-.sl .ov .hot{font-size:10px;font-weight:700;color:#10b981;margin-bottom:3px}
-.sl .ov a{font-size:15px;font-weight:700;color:#fff;text-decoration:none;line-height:1.4;display:block}
-.sl .ov .src{font-size:11px;color:#94a3b8;margin-top:4px}
-#sc{position:absolute;top:10px;right:12px;background:rgba(0,0,0,.6);color:#fff;font-size:12px;font-weight:700;padding:3px 9px;border-radius:20px;display:none}
+.sl .hot{font-size:11px;font-weight:700;color:#10b981;margin-bottom:6px}
+.sl a{font-size:18px;font-weight:700;color:#fff;text-decoration:none;line-height:1.45;display:block}
+.sl a:hover{color:#3b82f6}
+.sl .src{font-size:12px;color:#64748b;margin-top:8px}
+#sc{position:absolute;top:10px;right:12px;background:rgba(59,130,246,.2);color:#3b82f6;font-size:12px;font-weight:700;padding:3px 9px;border-radius:20px;border:1px solid rgba(59,130,246,.3);display:none}
 #sp{position:absolute;bottom:0;left:0;height:3px;background:#3b82f6;transition:width .1s linear}
-.nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(0,0,0,.5);color:#fff;border:none;font-size:22px;width:34px;height:34px;border-radius:50%;cursor:pointer;display:none;align-items:center;justify-content:center}
-.nav:hover{background:#3b82f6}
+.nav{position:absolute;top:50%;transform:translateY(-50%);background:rgba(59,130,246,.15);color:#3b82f6;border:1px solid rgba(59,130,246,.3);font-size:22px;width:34px;height:34px;border-radius:50%;cursor:pointer;display:none;align-items:center;justify-content:center}
+.nav:hover{background:#3b82f6;color:#fff}
 #pb{left:8px}#nb{right:8px}
 
 /* CONTROLS */
@@ -95,10 +93,10 @@ h1 b{color:#3b82f6}
 .ba{padding:7px 11px;border:none;border-radius:5px;font-size:12px;font-weight:700;cursor:pointer}
 .ba.lv{background:#10b981;color:#fff}.ba.bk{background:#ef4444;color:#fff}
 .ta{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
-.tg{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600;cursor:default}
+.tg{display:inline-flex;align-items:center;gap:3px;font-size:11px;padding:2px 8px;border-radius:20px;font-weight:600}
 .tg.lv{background:rgba(16,185,129,.12);color:#10b981;border:1px solid rgba(16,185,129,.3)}
 .tg.bk{background:rgba(239,68,68,.12);color:#ef4444;border:1px solid rgba(239,68,68,.3)}
-.td{cursor:pointer;font-size:13px;margin-left:1px}
+.td{cursor:pointer;font-size:13px}
 
 /* ACTION BAR */
 .ab{max-width:860px;margin:0 auto 10px;display:flex;gap:10px;align-items:center}
@@ -109,21 +107,17 @@ h1 b{color:#3b82f6}
 .cb .l{font-size:10px;color:#64748b;margin-top:1px}
 
 /* STATS */
-.sb{max-width:860px;margin:0 auto 10px;background:#161a23;border:1px solid #2a3044;border-radius:6px;padding:7px 12px;font-size:12px;color:#64748b;display:flex;justify-content:space-between;align-items:center}
+.sb{max-width:860px;margin:0 auto 10px;background:#161a23;border:1px solid #2a3044;border-radius:6px;padding:7px 12px;font-size:12px;color:#64748b}
 .sb b{color:#e2e8f0}
 
 /* LIST */
-.nl{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:7px}
-.nd{background:#161a23;border:1px solid #2a3044;border-radius:7px;display:flex;overflow:hidden;text-decoration:none;transition:border-color .15s}
+.nl{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:6px}
+.nd{background:#161a23;border:1px solid #2a3044;border-radius:7px;padding:11px 13px;text-decoration:none;display:block;transition:border-color .15s}
 .nd:hover{border-color:#3b82f6}
 .nd.ht{border-left:3px solid #10b981}
-.nd img{width:90px;min-height:68px;max-height:90px;flex-shrink:0;object-fit:cover}
-.nd .cp{width:90px;min-height:68px;flex-shrink:0;background:#1e2433;display:flex;align-items:center;justify-content:center;font-size:22px;color:#2a3044}
-.nd .nb{flex:1;padding:9px 11px;display:flex;flex-direction:column;justify-content:center}
-.nd .hb{font-size:10px;font-weight:700;color:#10b981;margin-bottom:2px}
+.nd .hb{font-size:10px;font-weight:700;color:#10b981;margin-bottom:3px}
 .nd .tt{font-size:13px;font-weight:600;line-height:1.4;color:#e2e8f0}
 .nd .mt{font-size:11px;color:#64748b;margin-top:4px}
-
 .spin{display:inline-block;width:16px;height:16px;border:2px solid #2a3044;border-top-color:#3b82f6;border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:4px}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style>
@@ -132,9 +126,7 @@ h1 b{color:#3b82f6}
 <h1>🎯 台灣新聞 <b>即時列表</b></h1>
 
 <div id="sw">
-  <div style="display:flex;align-items:center;justify-content:center;height:220px;color:#64748b;font-size:13px">
-    <span class="spin"></span>載入中...
-  </div>
+  <div style="padding:24px;color:#64748b;font-size:13px"><span class="spin"></span>載入中...</div>
   <div id="sc"></div>
   <button class="nav" id="pb" onclick="sP()">&#8249;</button>
   <button class="nav" id="nb" onclick="sN()">&#8250;</button>
@@ -168,9 +160,7 @@ h1 b{color:#3b82f6}
   </div>
 </div>
 
-<div class="sb">
-  <span id="st"><span class="spin"></span>載入中</span>
-</div>
+<div class="sb" id="st"><span class="spin"></span>載入中</div>
 <div class="nl" id="nl"></div>
 
 <script>
@@ -193,11 +183,10 @@ function bSS(arr){
   sl.forEach(function(n,i){
     var d=document.createElement('div');
     d.className='sl'+(i===0?' on':'');
-    var img=n.img?'<img src="'+n.img+'" onerror="this.style.display=\'none\'" alt="">':'<div class="ph">📰</div>';
-    d.innerHTML=img+'<div class="ov">'+(n.hot?'<div class="hot">🔥 命中關鍵字</div>':'')+
+    d.innerHTML=(n.hot?'<div class="hot">🔥 命中關鍵字</div>':'')+
       '<a href="'+n.url+'" target="_blank">'+n.title+'</a>'+
       '<div class="src">'+(n.src?'📡 '+n.src:'')+(n.date?' · '+fmt(n.date):'')+
-      '</div></div>';
+      '</div>';
     w.insertBefore(d,sc);
   });
   sI=0;
@@ -234,8 +223,7 @@ function aT(type){
   var id=type==='love'?'li':'bi',v=document.getElementById(id).value.trim();
   if(!v)return;
   if(type==='love')cL.push(v);else cB.push(v);
-  document.getElementById(id).value='';
-  sC();
+  document.getElementById(id).value='';sC();
 }
 function rT(type,i){if(type==='love')cL.splice(i,1);else cB.splice(i,1);sC();}
 function sC(){
@@ -245,24 +233,19 @@ function sC(){
 }
 
 function load(force){
-  if(force){
-    fetch('/api/refresh',{method:'POST'}).catch(function(){});
-  }
   cd=60;
+  if(force){fetch('/api/refresh',{method:'POST'}).catch(function(){});}
   fetch('/news.json').then(function(r){return r.json();}).then(function(d){
-    all=d.news||[];
-    cL=d.loveList||[];
-    cB=d.blockList||[];
+    all=d.news||[];cL=d.loveList||[];cB=d.blockList||[];
     rTags();
-    document.getElementById('st').textContent='共 '+all.length+' 則新聞';
+    document.getElementById('st').innerHTML='共 <b>'+all.length+'</b> 則　❤️ 命中 <b>'+all.filter(function(n){return n.hot;}).length+'</b> 則　🚫 已過濾';
     bSS(all);
     document.getElementById('nl').innerHTML=all.map(function(n){
-      var th=n.img?'<img src="'+n.img+'" loading="lazy" alt="" onerror="this.style.display=\'none\'">':'<div class="cp">📰</div>';
-      return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+th+
-        '<div class="nb">'+(n.hot?'<div class="hb">🔥 命中</div>':'')+
+      return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
+        (n.hot?'<div class="hb">🔥 命中</div>':'')+
         '<div class="tt">'+n.title+'</div>'+
         '<div class="mt">'+(n.src?'📡 '+n.src+' · ':'')+fmt(n.date)+'</div>'+
-        '</div></a>';
+        '</a>';
     }).join('');
   }).catch(function(){
     document.getElementById('st').innerHTML='<span style="color:#ef4444">❌ 失敗，請重試</span>';
@@ -274,11 +257,5 @@ window.onload=function(){load(false);};
 </script>
 </body>
 </html>`));
-
-// 手動觸發重抓
-app.post('/api/refresh', (req, res) => {
-    refresh();
-    res.json({ ok: true });
-});
 
 app.listen(PORT, () => console.log('port ' + PORT));
