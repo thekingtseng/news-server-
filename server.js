@@ -7,6 +7,9 @@ const CACHE_FILE = '/tmp/news_cache.json';
 
 app.use(express.json());
 
+// 提供預設圖片
+app.use(express.static('public'));
+
 let cache = [];
 
 // 啟動時讀檔案快取
@@ -23,9 +26,9 @@ async function refresh() {
         );
         const news = [];
         r.data.split('<item>').slice(1).forEach(it => {
-            const tM = it.match(/<title>([\\s\\S]*?)<\\/title>/);
-            const lM = it.match(/<link>([\\s\\S]*?)<\\/link>/);
-            const dM = it.match(/<pubDate>([\\s\\S]*?)<\\/pubDate>/);
+            const tM = it.match(/<title>([\s\S]*?)<\/title>/);
+            const lM = it.match(/<link>([\s\S]*?)<\/link>/);
+            const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
             if (!tM || !lM) return;
             const raw = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
             const dash = raw.lastIndexOf(' - ');
@@ -58,7 +61,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>台灣新聞</title>
 <style>
-/* CSS 略，保留你原本的樣式 */
+/* 保留原本 CSS，略 */
 </style>
 </head>
 <body>
@@ -70,7 +73,22 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 </div>
 
 <div class="cg">
-  <!-- 喜好關鍵字 / 黑名單面板 -->
+  <div class="pn">
+    <div class="pt lv">💚 喜好關鍵字（置頂）</div>
+    <div class="ir">
+      <input id="li" placeholder="台積電、AI..." onkeydown="if(event.key==='Enter')aT('love')">
+      <button class="ba lv" onclick="aT('love')">加入</button>
+    </div>
+    <div class="ta" id="lt"></div>
+  </div>
+  <div class="pn">
+    <div class="pt bk">🚫 黑名單（過濾）</div>
+    <div class="ir">
+      <input id="bi" placeholder="三立、爆料..." onkeydown="if(event.key==='Enter')aT('block')">
+      <button class="ba bk" onclick="aT('block')">封鎖</button>
+    </div>
+    <div class="ta" id="bt"></div>
+  </div>
 </div>
 
 <div class="ab">
@@ -153,4 +171,4 @@ setInterval(()=>{ if(all.length) showSlide(all.slice(0,15)); },5000);
 </body>
 </html>`));
 
-app.listen(PORT, () => console.log('port ' + PORT));
+app.listen(PORT, () => console
