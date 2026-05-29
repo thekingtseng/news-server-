@@ -47,9 +47,8 @@ async function refresh() {
 refresh();
 setInterval(refresh, 120000);
 
-// 直接回傳全部，不過濾
+// API
 app.get('/news.json', (req, res) => res.json(cache));
-
 app.post('/api/refresh', (req, res) => { refresh(); res.json({ ok: true }); });
 
 app.get('/', (req, res) => res.send(`<!DOCTYPE html>
@@ -98,6 +97,7 @@ h1 b{color:#3b82f6}
 .nd .hb{font-size:10px;font-weight:700;color:#10b981;margin-bottom:3px}
 .nd .tt{font-size:13px;font-weight:600;line-height:1.4;color:#e2e8f0}
 .nd .mt{font-size:11px;color:#64748b;margin-top:4px}
+.nd img{width:100%;max-height:160px;object-fit:cover;border-radius:5px;margin-top:6px}
 .spin{display:inline-block;width:16px;height:16px;border:2px solid #2a3044;border-top-color:#3b82f6;border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:4px}
 @keyframes sp{to{transform:rotate(360deg)}}
 </style>
@@ -127,3 +127,14 @@ h1 b{color:#3b82f6}
     </div>
     <div class="ta" id="bt"></div>
   </div>
+</div>
+
+<div class="ab">
+  <button class="rb" onclick="hardRefresh()">🔄 立即更新</button>
+  <div class="cb">
+    <div class="n" id="cd">60</div>
+    <div class="l">自動刷新</div>
+  </div>
+</div>
+
+<div class="sb" id="st
