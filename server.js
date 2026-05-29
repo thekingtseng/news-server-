@@ -312,10 +312,21 @@ function aT(type){
 }
 function rT(type,i){if(type==='love')cL.splice(i,1);else cB.splice(i,1);save();render();}
 
-function load(){
+function load(retry){
+  retry = retry || 0;
   cd=60;
   fetch('/news.json').then(function(r){return r.json();}).then(function(d){
-    all=d;render();
+    if(!d || d.length===0){
+      // 空資料：伺服器還在抓，2秒後重試，最多5次
+      if(retry < 5){
+        document.getElementById('st').innerHTML='<span class="spin"></span>伺服器啟動中，第'+(retry+1)+'次等待...';
+        setTimeout(function(){ load(retry+1); }, 2000);
+      } else {
+        document.getElementById('st').innerHTML='<span style="color:var(--bk)">❌ 無法取得新聞，請按「立即更新」</span>';
+      }
+      return;
+    }
+    all=d; render();
   }).catch(function(){
     document.getElementById('st').innerHTML='<span style="color:var(--bk)">❌ 載入失敗，請重試</span>';
   });
