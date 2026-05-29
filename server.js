@@ -120,7 +120,7 @@ function render(){
   news = news.map(n=>Object.assign({},n,{hot:cL.some(w=>n.title.includes(w))}));
   news.sort((a,b)=>b.hot-a.hot);
   var hot = news.filter(n=>n.hot).length;
-  document.getElementById('st').innerHTML='共 <b>'98'</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
+  document.getElementById('st').innerHTML='共 <b>''+all.length+''</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
   document.getElementById('nl').innerHTML=news.map(n=>{
     return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
       (n.hot?'<div class="hb">🔥 命中</div>':'')+
