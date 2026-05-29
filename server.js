@@ -1,13 +1,25 @@
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
+const CACHE_FILE = path.join('/tmp', 'news_cache.json');
 
 app.use(express.json());
 
 let blockList = ['三立', '民視', 'SETN', 'FTV'];
 let loveList  = ['台積電', '晶片', 'AI', '曾奕瑋', '正妹'];
 let cache = [];
+
+// 啟動時先從檔案讀快取，讓第一個用戶瞬間有資料
+try {
+    const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (Array.isArray(saved) && saved.length) {
+        cache = saved;
+        console.log('從檔案讀取快取：' + cache.length + ' 則');
+    }
+} catch(e) { /* 第一次沒有檔案，正常 */ }
 
 async function refresh() {
     try {
@@ -29,8 +41,12 @@ async function refresh() {
             const src   = dash > 0 ? raw.substring(dash + 3) : '';
             news.push({ title, url: lM[1].trim(), src, date: dM ? dM[1].trim() : '' });
         }
-        if (news.length) cache = news;
-        console.log('抓到 ' + news.length + ' 則');
+        if (news.length) {
+            cache = news;
+            // 寫檔，下次重啟直接用
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(news), 'utf8');
+            console.log('抓到 ' + news.length + ' 則，已存檔');
+        }
     } catch(e) { console.log('失敗: ' + e.message); }
 }
 
@@ -38,6 +54,7 @@ refresh();
 setInterval(refresh, 120000);
 
 app.get('/news.json', (req, res) => {
+    // 過濾和標記在這裡做，不影響 cache
     let news = cache.filter(n => !blockList.some(w => n.title.includes(w)));
     news = news.map(n => ({ ...n, hot: loveList.some(w => n.title.includes(w)) }));
     news.sort((a, b) => b.hot - a.hot);
