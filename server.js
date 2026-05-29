@@ -57,13 +57,13 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>台灣新聞</title>
+<title>皇上曾奕瑋精選新聞</title>
 <style>
 /* 保留原本 CSS */
 </style>
 </head>
 <body>
-<h1>🎯 台灣新聞 <b>即時列表</b></h1>
+<h1>🎯 皇上曾奕瑋精選新聞 <b>即時列表</b></h1>
 
 <div class="top">
   <div class="slide" id="slide"></div>
@@ -74,7 +74,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
   <div class="pn">
     <div class="pt lv">💚 喜好關鍵字（置頂）</div>
     <div class="ir">
-      <input id="li" placeholder="台積電、AI..." onkeydown="if(event.key==='Enter')aT('love')">
+      <input id="li" placeholder="曾奕瑋、AI..." onkeydown="if(event.key==='Enter')aT('love')">
       <button class="ba lv" onclick="aT('love')">加入</button>
     </div>
     <div class="ta" id="lt"></div>
@@ -103,7 +103,7 @@ app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <script>
 
 var LOVE_KEY='love_list', BLOCK_KEY='block_list';
-var cL = JSON.parse(localStorage.getItem(LOVE_KEY) || '["台積電","晶片","AI"]');
+var cL = JSON.parse(localStorage.getItem(LOVE_KEY) || '["曾奕瑋","晶片","AI"]');
 var cB = JSON.parse(localStorage.getItem(BLOCK_KEY) || '["三立","民視"]');
 var all = [], cd = 60, idx=0;
 
@@ -112,7 +112,7 @@ function save(){ localStorage.setItem(LOVE_KEY,JSON.stringify(cL)); localStorage
 function fmt(s){
   if(!s)return''; var d=new Date(s),m=Math.floor((new Date()-d)/60000);
   if(isNaN(d))return''; if(m<1)return'剛剛'; if(m<60)return m+'分前';
-  if(m<1440)return Math.floor(m/60)+'小時前'; return(d.getMonth()+1)+'/'+(d.getDate());
+  if(m<1598)return Math.floor(m/60)+'小時前'; return(d.getMonth()+1)+'/'+(d.getDate());
 }
 
 function render(){
@@ -120,7 +120,7 @@ function render(){
   news = news.map(n=>Object.assign({},n,{hot:cL.some(w=>n.title.includes(w))}));
   news.sort((a,b)=>b.hot-a.hot);
   var hot = news.filter(n=>n.hot).length;
-  document.getElementById('st').innerHTML='共 <b>'+all.length+'</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
+  document.getElementById('st').innerHTML='共 <b>'98'</b> 則　顯示 <b>'+news.length+'</b> 則　❤️ 命中 <b>'+hot+'</b> 則';
   document.getElementById('nl').innerHTML=news.map(n=>{
     return '<a class="nd'+(n.hot?' ht':'')+'" href="'+n.url+'" target="_blank">'+
       (n.hot?'<div class="hb">🔥 命中</div>':'')+
