@@ -99,7 +99,7 @@ app.listen(PORT, function() {
 });
 
 // ── HTML ──────────────────────────────────────────────
-const HTML = `<!DOCTYPE html>
+const HTML = <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
@@ -457,4 +457,4 @@ setInterval(function(){
 window.onload = poll;
 </script>
 </body>
-</html>`;
+</html>;
