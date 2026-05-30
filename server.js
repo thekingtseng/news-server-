@@ -1,4 +1,4 @@
-cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
+Cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -174,7 +174,7 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 
 /* NEWS LIST */
 .news-section{position:relative;z-index:1;padding-bottom:60px;}
-.news-item{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px 20px;margin-bottom:10px;position:relative;text-decoration:none;display:block;transition:border-color .2s,background .2s,transform .15s;cursor:pointer;}
+.news-item{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px 20px;margin-bottom:10px;position:relative;display:block;transition:border-color .2s,background .2s,transform .15s;cursor:pointer;}
 .news-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--gold);transform:scaleY(0);transform-origin:top;transition:transform .28s ease;}
 .news-item:hover::before{transform:scaleY(1);}
 .news-item:hover{background:rgba(15,36,69,.9);border-color:var(--gold);transform:translateX(3px);}
@@ -290,6 +290,7 @@ footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white
   <div class="divider">Intelligence Feed</div>
   <div id="nl"></div>
 </div>
+
 </div>
 
 <div class="gold-rule"></div>
@@ -325,6 +326,7 @@ function fmt(s){
   if(!s)return'';
   var d=new Date(s),m=Math.floor((new Date()-d)/60000);
   if(isNaN(d))return'';
+  if(m<0)m=0; // 時區防禦：防止負數導致顯示錯誤
   if(m<1)return'Just now';if(m<60)return m+' min ago';
   if(m<1440)return Math.floor(m/60)+' hr ago';
   return(d.getMonth()+1)+'/'+(d.getDate());
@@ -346,14 +348,15 @@ function render(){
 
   document.getElementById('nl').innerHTML=filtered.map(function(n){
     var src=n.src||'';
-    return '<a class="news-item'+(n.hot?' hot':'')+'" href="'+n.url+'" target="_blank">'+
+    // 改為 div 容器避免 W3C 語法衝突，並透過 onclick 全域跳轉
+    return '<div class="news-item'+(n.hot?' hot':'')+'" onclick="window.open(\''+n.url+'\', \'_blank\')">'+
       (n.hot?'<div class="hot-badge">★ 命中喜好關鍵字</div>':'')+
       '<div class="news-title-text">'+n.title+'</div>'+
       '<div class="news-meta-row">'+
       (src?'<span class="media-badge">'+src+'</span>':'')+
       (n.date?'<span>'+fmt(n.date)+'</span>':'')+
       (src?'<button class="block-src-btn" onclick="blockSrc(event,\''+src+'\')">✕ 封鎖此媒體</button>':'')+
-      '</div></a>';
+      '</div></div>';
   }).join('');
 
   rTags();
@@ -361,7 +364,7 @@ function render(){
 }
 
 function blockSrc(e,src){
-  e.preventDefault();e.stopPropagation();
+  e.preventDefault();e.stopPropagation(); // 這裡配合外層 div 點擊能完美阻斷冒泡
   if(!cB.includes(src)){cB.push(src);save();render();}
 }
 
