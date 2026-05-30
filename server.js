@@ -9,54 +9,88 @@ const CACHE_FILE = path.join(__dirname, 'news_cache.json');
 app.use(express.json());
 
 let cache = [];
+
 try {
     if (fs.existsSync(CACHE_FILE)) {
         const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
         if (saved && saved.length) { 
             cache = saved; 
-            console.log('讀快取：' + cache.length + ' 則'); 
+            console.log('【快取成功】讀取歷史情報：' + cache.length + ' 則'); 
         }
     }
 } catch(e) {
-    console.log('讀取快取失敗: ' + e.message);
+    console.log('快取讀取異常: ' + e.message);
 }
 
 async function refresh() {
     try {
+        console.log('【戰術偽裝】正在向 Google News RSS 提取最新戰略情報...');
+        
         const r = await axios.get(
             'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            { headers: { 'User-Agent': 'Mozilla/5.0' }, timeout: 8000 }
+            { 
+                headers: { 
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml;q=0.9, image/webp, */*;q=0.8',
+                    'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }, 
+                timeout: 9000 
+            }
         );
+        
+        if (!r.data || !r.data.includes('<item>')) {
+            throw new Error('Google RSS 返回的數據未包含有效情報項目');
+        }
+
         const news = [];
-        r.data.split('<item>').slice(1).forEach(it => {
+        const items = r.data.split('<item>').slice(1);
+        
+        items.forEach(it => {
             const tM = it.match(/<title>([\s\S]*?)<\/title>/);
             const lM = it.match(/<link>([\s\S]*?)<\/link>/);
             const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+            
             if (!tM || !lM) return;
-            const raw = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
+            
+            let raw = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
             const dash = raw.lastIndexOf(' - ');
+            
             news.push({
-                title: dash > 0 ? raw.substring(0, dash) : raw,
-                src:   dash > 0 ? raw.substring(dash + 3) : '',
+                title: dash > 0 ? raw.substring(0, dash).trim() : raw,
+                src:   dash > 0 ? raw.substring(dash + 3).trim() : '戰略焦點',
                 url:   lM[1].trim(),
-                date:  dM ? dM[1].trim() : ''
+                date:  dM ? dM[1].trim() : new Date().toUTCString()
             });
         });
+
         if (news.length) { 
             cache = news; 
-            fs.writeFileSync(CACHE_FILE, JSON.stringify(news)); 
-            console.log('更新：' + news.length + ' 則'); 
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(news), 'utf8'); 
+            console.log('【系統捷報】情報注入成功！目前在線：' + news.length + ' 則最新情報'); 
+            return true;
         }
+        return false;
     } catch(e) { 
-        console.log('更新失敗: ' + e.message); 
+        console.log('【情報中斷】防線未破，錯誤原因: ' + e.message); 
+        return false;
     }
 }
 
-refresh();
-setInterval(refresh, 120000);
+// 🛠️ [防禦一：後端強制破壞快取標頭]
+// 當瀏覽器來拿 news.json 時，後端塞入最高層級的 HTTP 標頭，強迫瀏覽器絕對不准儲存快取
+app.get('/news.json', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); // 💡 拒絕任何形式的硬碟快取
+    res.setHeader('Pragma', 'no-cache');                                  // 💡 相容舊版協議
+    res.setHeader('Expires', '0');                                         // 💡 讓快取立刻過期
+    res.json(cache);
+});
 
-app.get('/news.json', (req, res) => res.json(cache));
-app.post('/api/refresh', (req, res) => { refresh(); res.json({ ok: true }); });
+app.post('/api/refresh', async (req, res) => { 
+    const success = await refresh(); 
+    res.json({ ok: success, count: cache.length }); 
+});
 
 app.get('/', (req, res) => res.send(`<!DOCTYPE html>
 <html lang="zh-TW">
@@ -343,6 +377,11 @@ function render(){
     '<span class="stats-pill bk">✕ 過濾 '+blocked+'</span>'+
     '<span class="right">上次更新 '+now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0')+'</span>';
 
+  if(!filtered.length){
+    document.getElementById('nl').innerHTML='<div class="loading-text">暫無即時情報，請確認連線或點擊更新。</div>';
+    return;
+  }
+
   document.getElementById('nl').innerHTML=filtered.map(function(n){
     var src=n.src||'';
     return '<div class="news-item'+(n.hot?' hot':'')+'" onclick="window.open(\''+n.url+'\', \'_blank\')">'+
@@ -366,7 +405,10 @@ function blockSrc(e,src){
 
 function tickerInit(){
   var list=filtered.slice(0,15);
-  if(!list.length)return;
+  if(!list.length){
+    document.getElementById('ticker-title').textContent = '暫無即時輪播情報';
+    return;
+  }
   tIdx=0;tickerShow(list);
 }
 function tickerShow(list){
@@ -408,25 +450,37 @@ function rT(type,i){if(type==='love')cL.splice(i,1);else cB.splice(i,1);save();r
 
 function load(retry){
   retry=retry||0;cd=60;
-  fetch('/news.json').then(function(r){return r.json();}).then(function(d){
+  const host = window.location.origin;
+  
+  // 🛠️ [防禦二：前端請求加入動態時間戳記]
+  // 透過在網址後方加上隨機的「?t=時間戳記」，欺騙手機瀏覽器，讓它以為這是一個全新的 API，進而粉碎手機硬碟快取
+  fetch(host + '/news.json?t=' + new Date().getTime()).then(function(r){return r.json();}).then(function(d){
     if(!d||!d.length){
-      if(retry<6){
-        document.getElementById('st').innerHTML='<span class="spin"></span>Initializing... ('+(retry+1)+'/6)';
+      if(retry<8){
+        document.getElementById('st').innerHTML='<span class="spin"></span>系統配置中，正在向背景提取戰略情報... ('+(retry+1)+'/8)';
         setTimeout(function(){load(retry+1);},2000);
       } else {
-        document.getElementById('st').innerHTML='<span style="color:var(--red)">✕ 無法取得新聞，請按更新按鈕</span>';
+        document.getElementById('st').innerHTML='<span style="color:var(--red)">✕ 後端初始化尚未就緒，請點擊下方按鈕強制提取</span>';
       }
       return;
     }
     all=d;render();
   }).catch(function(){
-    document.getElementById('st').innerHTML='<span style="color:var(--red)">✕ 載入失敗，請重試</span>';
+    document.getElementById('st').innerHTML='<span style="color:var(--red)">✕ 連線異常，後端服務尚未就緒</span>';
   });
 }
 
 function hardRefresh(){
-  document.getElementById('st').innerHTML='<span class="spin"></span>Executing intel retrieval...';
-  fetch('/api/refresh',{method:'POST'}).then(function(){setTimeout(load,3000);}).catch(load);
+  const host = window.location.origin;
+  document.getElementById('st').innerHTML='<span class="spin"></span>正在向後端下達強制情報檢索指令...';
+  // 💡 立即更新也加入時間戳記
+  fetch(host + '/api/refresh?t=' + new Date().getTime(),{method:'POST'}).then(function(r){return r.json();}).then(function(res){
+     if(res.ok){
+        setTimeout(load, 1500);
+     } else {
+        load();
+     }
+  }).catch(load);
 }
 
 setInterval(function(){cd--;document.getElementById('cd').textContent=cd;if(cd<=0)load();},1000);
@@ -435,4 +489,13 @@ window.onload=load;
 </body>
 </html>`));
 
-app.listen(PORT, () => console.log('port ' + PORT));
+app.listen(PORT, () => {
+    console.log('=================================================');
+    console.log('【新偉大川普黃金年代】戰略情報系統已成功部署於 Port: ' + PORT);
+    console.log('=================================================');
+    
+    setTimeout(async () => {
+        console.log('【背景戰術啟動】正在無感提取初始情報源...');
+        await refresh();
+    }, 100);
+});
