@@ -1,406 +1,308 @@
+cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const express = require('express');
 const axios   = require('axios');
 const fs      = require('fs');
 const app     = express();
 const PORT    = process.env.PORT || 10000;
-const CACHE   = '/tmp/nc.json';
+const CACHE_FILE = '/tmp/nc.json';
 
 app.use(express.json());
 
-// ── 快取 ────────────────────────────────────────────
+// ─── 快取 ───────────────────────────────────────────
 let cache = [];
+
 try {
-  const s = JSON.parse(fs.readFileSync(CACHE, 'utf8'));
-  if (Array.isArray(s) && s.length) { cache = s; console.log('快取 ' + cache.length + ' 則'); }
+    const s = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+    if (Array.isArray(s) && s.length > 0) {
+        cache = s;
+        console.log('[CACHE] loaded ' + cache.length);
+    }
 } catch(e) {}
 
-// ── 抓 RSS ──────────────────────────────────────────
-let busy = false;
-async function refresh(n) {
-  if (busy) return; busy = true; n = n || 1;
-  try {
-    const r = await axios.get(
-      'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-      { headers:{ 'User-Agent':'Mozilla/5.0' }, timeout:9000 }
-    );
-    if (!r.data || !r.data.includes('<item>')) throw new Error('空回應');
+// ─── RSS 抓取 ────────────────────────────────────────
+function parseRSS(xml) {
     const news = [];
-    r.data.split('<item>').slice(1).forEach(function(it){
-      const tM = it.match(/<title>([\s\S]*?)<\/title>/);
-      const lM = it.match(/<link>([\s\S]*?)<\/link>/);
-      const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
-      if (!tM || !lM) return;
-      const raw  = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
-      const dash = raw.lastIndexOf(' - ');
-      news.push({
-        title: dash > 0 ? raw.substring(0, dash).trim() : raw,
-        src:   dash > 0 ? raw.substring(dash+3).trim() : '',
-        url:   lM[1].trim(),
-        date:  dM ? dM[1].trim() : ''
-      });
+    if (!xml || !xml.includes('<item>')) return news;
+    xml.split('<item>').slice(1).forEach(function(it) {
+        const tM = it.match(/<title>([\s\S]*?)<\/title>/);
+        const lM = it.match(/<link>([\s\S]*?)<\/link>/);
+        const dM = it.match(/<pubDate>([\s\S]*?)<\/pubDate>/);
+        if (!tM || !lM) return;
+        const raw  = tM[1].replace('<![CDATA[','').replace(']]>','').trim();
+        const dash = raw.lastIndexOf(' - ');
+        news.push({
+            title: dash > 0 ? raw.substring(0, dash).trim() : raw,
+            src:   dash > 0 ? raw.substring(dash+3).trim() : '',
+            url:   lM[1].trim(),
+            date:  dM ? dM[1].trim() : ''
+        });
     });
-    if (news.length) {
-      cache = news;
-      try { fs.writeFileSync(CACHE, JSON.stringify(news)); } catch(e){}
-      console.log('OK ' + news.length + ' 則');
+    return news;
+}
+
+async function doRefresh() {
+    try {
+        const r = await axios.get(
+            'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
+            { headers:{ 'User-Agent':'Mozilla/5.0' }, timeout:10000 }
+        );
+        const news = parseRSS(r.data);
+        if (news.length > 0) {
+            cache = news;
+            try { fs.writeFileSync(CACHE_FILE, JSON.stringify(news)); } catch(e) {}
+            console.log('[RSS] ok ' + news.length);
+            return true;
+        }
+    } catch(e) {
+        console.log('[RSS] fail: ' + e.message);
     }
-    busy = false;
-  } catch(e) {
-    busy = false;
-    console.log('fail#'+n+': '+e.message);
-    if (n < 10) setTimeout(function(){ refresh(n+1); }, Math.min(n*8000, 60000));
-  }
+    return false;
 }
 
-refresh(); setInterval(refresh, 120000);
+// server 啟動馬上抓，每 2 分鐘更新
+doRefresh();
+setInterval(doRefresh, 120000);
 
-// ── 路由 ────────────────────────────────────────────
+// ─── 等 cache 有資料的 helper ────────────────────────
+function waitForCache(ms) {
+    return new Promise(function(resolve) {
+        if (cache.length > 0) return resolve();
+        const t0 = Date.now();
+        const iv = setInterval(function() {
+            if (cache.length > 0 || Date.now() - t0 > ms) {
+                clearInterval(iv);
+                resolve();
+            }
+        }, 200);
+    });
+}
 
-// 主頁：把 cache 直接注入 HTML，開啟即顯示
-app.get('/', function(req, res) {
-  res.send(buildHTML(cache));
+// ─── 安全序列化：防止破壞 HTML/JS ───────────────────
+function safeJSON(data) {
+    return JSON.stringify(data)
+        .replace(/<\/script>/gi, '<\\/script>')
+        .replace(/<!--/g, '<\\!--');
+}
+
+// ─── 主頁：等 cache 再回應，保證有資料 ───────────────
+app.get('/', async function(req, res) {
+    await waitForCache(12000);   // 最多等 12 秒
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(buildHTML());
 });
 
-// 背景更新用（60秒 auto-refresh 呼叫）
+// ─── JSON API（60秒背景刷新用）──────────────────────
 app.get('/news.json', function(req, res) {
-  res.setHeader('Cache-Control','no-cache, no-store');
-  res.json(cache);
+    res.setHeader('Cache-Control', 'no-cache, no-store');
+    res.json(cache);
 });
 
-app.post('/api/refresh', function(req, res) {
-  busy = false; refresh();
-  res.json({ ok: true });
+app.post('/api/refresh', async function(req, res) {
+    const ok = await doRefresh();
+    res.json({ ok: ok, count: cache.length });
 });
 
-app.listen(PORT, function(){ console.log('port ' + PORT); });
+app.listen(PORT, function() { console.log('port ' + PORT); });
 
-// ── HTML builder：每次 request 把最新 cache 塞進去 ──
-function buildHTML(news) {
-  // 安全序列化，避免 </script> 注入
-  const DATA = JSON.stringify(news).replace(/<\/script>/gi,'<\\/script>');
-  return `<!DOCTYPE html>
-<html lang="zh-TW">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>THE KING TSENG — TAIWAN INTEL FEED</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Josefin+Sans:wght@100;300;400;600&display=swap" rel="stylesheet">
-<style>
-:root{
-  --gold:#D4AF37;--gold-light:#E8CC6A;
-  --gold-dim:rgba(212,175,55,0.12);--gold-border:rgba(212,175,55,0.28);
-  --navy:#0A192F;--navy-mid:#0C1F3A;--navy-card:#0F2445;--navy-deep:#060F1E;
-  --text:#E0D8C8;--text-dim:rgba(224,216,200,0.52);--white:#F0EAD6;--white-faint:rgba(240,234,214,0.08);
-  --green:#00D97E;--red:#FF4C4C;
+// ─── HTML ────────────────────────────────────────────
+function buildHTML() {
+    // 資料直接注入 JS 變數，不做 fetch
+    const DATA = safeJSON(cache);
+
+    return '<!DOCTYPE html>\n' +
+'<html lang="zh-TW">\n' +
+'<head>\n' +
+'<meta charset="UTF-8">\n' +
+'<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">\n' +
+'<title>THE KING TSENG — TAIWAN INTEL FEED</title>\n' +
+'<link rel="preconnect" href="https://fonts.googleapis.com">\n' +
+'<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Josefin+Sans:wght@100;300;400;600&display=swap" rel="stylesheet">\n' +
+'<style>\n' +
+':root{--gold:#D4AF37;--gold-light:#E8CC6A;--gold-dim:rgba(212,175,55,0.12);--gold-border:rgba(212,175,55,0.28);--navy:#0A192F;--navy-mid:#0C1F3A;--navy-card:#0F2445;--navy-deep:#060F1E;--text:#E0D8C8;--text-dim:rgba(224,216,200,0.52);--white:#F0EAD6;--white-faint:rgba(240,234,214,0.08);--green:#00D97E;--red:#FF4C4C;}\n' +
+'*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}\n' +
+'body{background:var(--navy-deep);color:var(--text);font-family:"Josefin Sans",sans-serif;font-weight:300;overflow-x:hidden;}\n' +
+'body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg viewBox=\'0 0 256 256\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.9\' numOctaves=\'4\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23n)\' opacity=\'0.035\'/%3E%3C/svg%3E");opacity:0.4;}\n' +
+'body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(212,175,55,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(212,175,55,0.04) 1px,transparent 1px);background-size:56px 56px;}\n' +
+'#sl{position:fixed;top:0;left:0;height:2px;width:0%;background:linear-gradient(to right,var(--gold),var(--gold-light));z-index:9999;}\n' +
+'header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-content:space-between;align-items:center;padding:16px 28px;background:linear-gradient(to bottom,rgba(6,15,30,0.97) 80%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid rgba(212,175,55,0.07);}\n' +
+'.lm{font-family:"Cormorant Garamond",serif;font-size:18px;font-weight:700;color:var(--gold);letter-spacing:0.28em;text-transform:uppercase;}\n' +
+'.ls{font-size:10px;letter-spacing:0.5em;text-transform:uppercase;color:var(--text-dim);margin-top:2px;}\n' +
+'.hr{display:flex;align-items:center;gap:20px;}\n' +
+'.lb{display:flex;align-items:center;gap:7px;font-size:11px;letter-spacing:0.3em;color:var(--gold);text-transform:uppercase;}\n' +
+'.ld{width:6px;height:6px;background:var(--gold);border-radius:50%;animation:blink 1.5s ease-in-out infinite;}\n' +
+'@keyframes blink{0%,100%{opacity:1;}50%{opacity:.15;}}\n' +
+'.ht{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}\n' +
+'.hero{position:relative;z-index:1;padding:120px 28px 56px;text-align:center;}\n' +
+'.hew{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:18px;}\n' +
+'.hew::before,.hew::after{content:"";display:inline-block;width:28px;height:1px;background:var(--gold);vertical-align:middle;margin:0 12px;}\n' +
+'.htl{font-family:"Cormorant Garamond",serif;font-size:clamp(36px,8vw,72px);font-weight:300;line-height:1.05;}\n' +
+'.htl em{font-style:italic;color:var(--gold);}\n' +
+'.hsb{margin-top:18px;font-size:13px;letter-spacing:.14em;color:var(--text-dim);line-height:2;}\n' +
+'.gr{position:relative;z-index:1;height:1px;background:linear-gradient(to right,transparent,var(--gold) 20%,var(--gold) 80%,transparent);opacity:.2;margin:0 28px;}\n' +
+'.wrap{max-width:920px;margin:0 auto;padding:0 20px;}\n' +
+'.sec{position:relative;z-index:1;padding:36px 0 0;}\n' +
+'.sl2{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;}\n' +
+'.sl2::before{content:"// ";opacity:.45;}\n' +
+'.tkb{background:var(--navy-card);border:1px solid var(--gold-border);position:relative;overflow:hidden;margin-bottom:4px;}\n' +
+'.tkb::before,.tkb::after{content:"";position:absolute;width:18px;height:18px;border-color:var(--gold);border-style:solid;}\n' +
+'.tkb::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}\n' +
+'.tkb::after{bottom:-1px;right:-1px;border-width:0 1px 1px 0;}\n' +
+'.tki{display:flex;align-items:stretch;min-height:80px;}\n' +
+'.tkt{background:linear-gradient(135deg,var(--gold),var(--gold-light));color:var(--navy);font-size:10px;font-weight:700;letter-spacing:1px;padding:0 16px;display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;}\n' +
+'.tkc{flex:1;padding:14px 52px 14px 18px;text-decoration:none;display:flex;flex-direction:column;justify-content:center;transition:background .15s;}\n' +
+'.tkc:hover{background:var(--gold-dim);}\n' +
+'.tkh{font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase;}\n' +
+'.tktt{font-size:15px;font-weight:400;line-height:1.5;color:var(--white);font-family:"Cormorant Garamond",serif;}\n' +
+'.tkc:hover .tktt{color:var(--gold);}\n' +
+'.tkm{font-size:11px;color:var(--text-dim);margin-top:5px;}\n' +
+'.tkcnt{position:absolute;top:10px;right:12px;background:rgba(212,175,55,.12);border:1px solid var(--gold-border);color:var(--gold);font-size:11px;font-weight:700;padding:3px 10px;letter-spacing:.1em;}\n' +
+'.tkf{display:flex;align-items:center;border-top:1px solid rgba(212,175,55,.1);background:rgba(0,0,0,.2);}\n' +
+'.tkpw{flex:1;padding:8px 14px;}\n' +
+'.tkpb{background:rgba(212,175,55,.1);height:2px;overflow:hidden;}\n' +
+'.tkpf{height:100%;background:linear-gradient(to right,var(--gold),var(--gold-light));width:0%;transition:width .1s linear;}\n' +
+'.tknv{display:flex;}\n' +
+'.tknvb{background:none;border:none;border-left:1px solid rgba(212,175,55,.1);color:var(--text-dim);font-size:18px;padding:8px 16px;cursor:pointer;transition:color .15s,background .15s;}\n' +
+'.tknvb:hover{color:var(--gold);background:var(--gold-dim);}\n' +
+'.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}\n' +
+'@media(max-width:560px){.two{grid-template-columns:1fr;}}\n' +
+'.cb{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px;position:relative;}\n' +
+'.cb::before,.cb::after{content:"";position:absolute;width:12px;height:12px;border-color:var(--gold);border-style:solid;opacity:.35;}\n' +
+'.cb::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}\n' +
+'.cb::after{bottom:-1px;right:-1px;border-width:0 1px 1px 0;}\n' +
+'.cl{font-size:11px;letter-spacing:.42em;text-transform:uppercase;margin-bottom:12px;font-weight:600;}\n' +
+'.cl::before{content:"// ";opacity:.45;}\n' +
+'.cl.lv{color:var(--green);}.cl.bk{color:var(--red);}\n' +
+'.ir{display:flex;gap:8px;}\n' +
+'.ir input{flex:1;background:rgba(0,0,0,.38);border:1px solid var(--gold-border);color:var(--text);padding:9px 12px;font-family:"Josefin Sans",sans-serif;font-size:13px;outline:none;transition:border-color .3s,box-shadow .3s;}\n' +
+'.ir input::placeholder{color:rgba(224,216,200,.2);}\n' +
+'.ir input:focus{border-color:var(--gold);box-shadow:0 0 18px var(--gold-dim);}\n' +
+'.ib{padding:9px 16px;border:1px solid;font-family:"Josefin Sans",sans-serif;font-size:12px;font-weight:600;letter-spacing:.3em;text-transform:uppercase;cursor:pointer;transition:all .25s;flex-shrink:0;background:transparent;}\n' +
+'.ib.lv{border-color:var(--green);color:var(--green);}.ib.lv:hover{background:rgba(0,217,126,.1);}\n' +
+'.ib.bk{border-color:var(--red);color:var(--red);}.ib.bk:hover{background:rgba(255,76,76,.1);}\n' +
+'.tr{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;min-height:4px;}\n' +
+'.tg{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 10px;font-weight:600;letter-spacing:.15em;text-transform:uppercase;}\n' +
+'.tg.lv{background:rgba(0,217,126,.07);color:var(--green);border:1px solid rgba(0,217,126,.25);}\n' +
+'.tg.bk{background:rgba(255,76,76,.07);color:var(--red);border:1px solid rgba(255,76,76,.25);}\n' +
+'.td{cursor:pointer;opacity:.6;font-size:13px;}.td:hover{opacity:1;}\n' +
+'.ab{display:flex;gap:12px;align-items:stretch;margin-bottom:14px;}\n' +
+'.br{flex:1;background:transparent;border:1px solid var(--gold);color:var(--gold);font-family:"Josefin Sans",sans-serif;font-size:14px;font-weight:400;letter-spacing:.5em;text-transform:uppercase;padding:14px;cursor:pointer;position:relative;overflow:hidden;transition:color .35s;}\n' +
+'.br::before{content:"";position:absolute;inset:0;background:linear-gradient(135deg,var(--gold),var(--gold-light));transform:scaleX(0);transform-origin:left;transition:transform .45s ease;z-index:0;}\n' +
+'.br:hover{color:var(--navy);}.br:hover::before{transform:scaleX(1);}\n' +
+'.br span{position:relative;z-index:1;}\n' +
+'.cdb{background:var(--navy-card);border:1px solid var(--gold-border);padding:10px 16px;text-align:center;min-width:72px;display:flex;flex-direction:column;justify-content:center;}\n' +
+'.cdn{font-family:"Cormorant Garamond",serif;font-size:28px;font-weight:700;color:var(--gold);line-height:1;}\n' +
+'.cdl{font-size:9px;letter-spacing:.4em;color:var(--text-dim);margin-top:3px;text-transform:uppercase;}\n' +
+'.sb{background:rgba(0,0,0,.3);border:1px solid rgba(212,175,55,.12);padding:10px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:28px;}\n' +
+'.sb b{color:var(--gold);}\n' +
+'.sp{font-size:10px;letter-spacing:.2em;padding:2px 9px;border:1px solid;font-weight:600;text-transform:uppercase;}\n' +
+'.sp.lv{background:rgba(0,217,126,.06);color:var(--green);border-color:rgba(0,217,126,.25);}\n' +
+'.sp.bk{background:rgba(255,76,76,.06);color:var(--red);border-color:rgba(255,76,76,.25);}\n' +
+'.sr{margin-left:auto;font-size:10px;letter-spacing:.2em;}\n' +
+'.dv{display:flex;align-items:center;gap:12px;font-size:10px;letter-spacing:.55em;text-transform:uppercase;color:var(--text-dim);margin-bottom:18px;}\n' +
+'.dv::before,.dv::after{content:"";flex:1;height:1px;background:linear-gradient(to right,transparent,rgba(212,175,55,.2),transparent);}\n' +
+'.ni{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px 20px;margin-bottom:10px;position:relative;cursor:pointer;transition:border-color .2s,transform .15s;}\n' +
+'.ni::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--gold);transform:scaleY(0);transform-origin:top;transition:transform .28s ease;}\n' +
+'.ni:hover::before{transform:scaleY(1);}\n' +
+'.ni:hover{border-color:var(--gold);transform:translateX(3px);}\n' +
+'.ni.hot{border-left:3px solid var(--green);}\n' +
+'.ni.hot::before{background:var(--green);}\n' +
+'.hb{font-size:10px;font-weight:700;color:var(--green);margin-bottom:5px;letter-spacing:.5em;text-transform:uppercase;}\n' +
+'.nt{font-family:"Cormorant Garamond",serif;font-size:17px;font-weight:400;line-height:1.5;color:var(--white);margin-bottom:8px;}\n' +
+'.ni:hover .nt{color:var(--gold);}\n' +
+'.ni.hot:hover .nt{color:var(--green);}\n' +
+'.nm{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text-dim);}\n' +
+'.mb{background:rgba(212,175,55,.08);border:1px solid var(--gold-border);color:var(--gold-light);padding:2px 8px;font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;}\n' +
+'.bb{background:none;border:none;color:rgba(224,216,200,.25);cursor:pointer;font-size:10px;font-family:"Josefin Sans",sans-serif;letter-spacing:.2em;text-transform:uppercase;padding:0;text-decoration:underline;margin-left:auto;transition:color .15s;}\n' +
+'.bb:hover{color:var(--red);}\n' +
+'.spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(212,175,55,.2);border-top-color:var(--gold);border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:6px;}\n' +
+'@keyframes sp{to{transform:rotate(360deg)}}\n' +
+'.em{text-align:center;color:var(--text-dim);font-style:italic;font-size:13px;letter-spacing:.25em;padding:40px 0;}\n' +
+'footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white-faint);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}\n' +
+'.fl{font-family:"Cormorant Garamond",serif;font-size:16px;font-weight:700;letter-spacing:.3em;color:var(--gold);text-transform:uppercase;}\n' +
+'.ft{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}\n' +
+'</style>\n' +
+'</head>\n' +
+'<body>\n' +
+'<div id="sl"></div>\n' +
+'<header>\n' +
+'  <div><div class="lm">The King Tseng</div><div class="ls">Taiwan Intel Feed · Real-time Strategic News</div></div>\n' +
+'  <div class="hr"><div class="ht" id="hdrTime"></div><div class="lb"><div class="ld"></div>Live</div></div>\n' +
+'</header>\n' +
+'<div class="hero">\n' +
+'  <div class="hew">AI-Curated Taiwan Intelligence</div>\n' +
+'  <h1 class="htl">精選新聞<br><em>即時情報</em></h1>\n' +
+'  <p class="hsb">皇上曾奕瑋 · The Gold Content of News</p>\n' +
+'</div>\n' +
+'<div class="gr"></div>\n' +
+'<div class="sec"><div class="wrap">\n' +
+'  <div class="sl2">Top 15 Intelligence Stream</div>\n' +
+'  <div class="tkb">\n' +
+'    <div class="tki">\n' +
+'      <div class="tkt">TOP<br>15</div>\n' +
+'      <a class="tkc" id="tLink" href="#" target="_blank">\n' +
+'        <div class="tkh" id="tHot" style="display:none">★ 命中喜好關鍵字</div>\n' +
+'        <div class="tktt" id="tTitle">載入中...</div>\n' +
+'        <div class="tkm" id="tMeta"></div>\n' +
+'      </a>\n' +
+'      <div class="tkcnt" id="tCnt">- / -</div>\n' +
+'    </div>\n' +
+'    <div class="tkf">\n' +
+'      <div class="tkpw"><div class="tkpb"><div class="tkpf" id="tProg"></div></div></div>\n' +
+'      <div class="tknv">\n' +
+'        <button class="tknvb" onclick="tPrev()">&#8249;</button>\n' +
+'        <button class="tknvb" onclick="tNext()">&#8250;</button>\n' +
+'      </div>\n' +
+'    </div>\n' +
+'  </div>\n' +
+'</div></div>\n' +
+'<div class="gr" style="margin-top:32px;"></div>\n' +
+'<div class="sec"><div class="wrap">\n' +
+'  <div class="two">\n' +
+'    <div class="cb"><div class="cl lv">喜好關鍵字（置頂）</div><div class="ir"><input id="li" placeholder="曾奕瑋、AI..." onkeydown="if(event.key===\'Enter\')aT(\'love\')"><button class="ib lv" onclick="aT(\'love\')">加入</button></div><div class="tr" id="lt"></div></div>\n' +
+'    <div class="cb"><div class="cl bk">封鎖黑名單（過濾）</div><div class="ir"><input id="bi" placeholder="三立、爆料..." onkeydown="if(event.key===\'Enter\')aT(\'block\')"><button class="ib bk" onclick="aT(\'block\')">封鎖</button></div><div class="tr" id="bt"></div></div>\n' +
+'  </div>\n' +
+'  <div class="ab"><button class="br" onclick="hardRefresh()"><span>⊕ &nbsp; 立即更新新聞</span></button><div class="cdb"><div class="cdn" id="cd">60</div><div class="cdl">Auto Refresh</div></div></div>\n' +
+'  <div class="sb" id="st">初始化...</div>\n' +
+'</div></div>\n' +
+'<div class="sec" style="padding-bottom:60px;"><div class="wrap">\n' +
+'  <div class="dv">Intelligence Feed</div>\n' +
+'  <div id="nl"></div>\n' +
+'</div></div>\n' +
+'<div class="gr"></div>\n' +
+'<footer><div class="fl">The King Tseng AI</div><div class="ft">Taiwan Intel Feed · Real-time</div><div class="ft">For Reference Only</div></footer>\n' +
+'<script>\n' +
+'var all = ' + DATA + ';\n' +
+'var LK="lv7",BK="bk7";\n' +
+'var cL=JSON.parse(localStorage.getItem(LK)||\'["曾奕瑋","台積電","晶片","AI","正妹"]\');\n' +
+'var cB=JSON.parse(localStorage.getItem(BK)||\'["三立","民視","SETN","FTV"]\');\n' +
+'var filtered=[],cd=60,tI=0,tT=null,pT=null,pV=0;\n' +
+'function save(){localStorage.setItem(LK,JSON.stringify(cL));localStorage.setItem(BK,JSON.stringify(cB));}\n' +
+'window.addEventListener("scroll",function(){var p=window.scrollY/(document.body.scrollHeight-window.innerHeight)*100;document.getElementById("sl").style.width=p+"%";});\n' +
+'setInterval(function(){var n=new Date();document.getElementById("hdrTime").textContent=n.getHours().toString().padStart(2,"0")+":"+n.getMinutes().toString().padStart(2,"0")+":"+n.getSeconds().toString().padStart(2,"0");},1000);\n' +
+'function fmt(s){if(!s)return"";var d=new Date(s),m=Math.floor((new Date()-d)/60000);if(isNaN(d))return"";if(m<0)m=0;if(m<1)return"Just now";if(m<60)return m+" min ago";if(m<1440)return Math.floor(m/60)+" hr ago";return(d.getMonth()+1)+"/"+(d.getDate());}\n' +
+'function render(){\n' +
+'  filtered=all.filter(function(n){return !cB.some(function(w){return n.title.includes(w);});});\n' +
+'  filtered=filtered.map(function(n){return Object.assign({},n,{hot:cL.some(function(w){return n.title.includes(w);})});});\n' +
+'  filtered.sort(function(a,b){return b.hot-a.hot;});\n' +
+'  var hot=filtered.filter(function(n){return n.hot;}).length;\n' +
+'  var now=new Date();\n' +
+'  document.getElementById("st").innerHTML="總計 <b>"+all.length+"</b> 則 &nbsp;·&nbsp; 顯示 <b>"+filtered.length+"</b> 則 &nbsp;<span class=\\"sp lv\\">★ "+hot+"</span> &nbsp;<span class=\\"sp bk\\">✕ "+(all.length-filtered.length)+"</span><span class=\\"sr\\">"+now.getHours().toString().padStart(2,"0")+":"+now.getMinutes().toString().padStart(2,"0")+"</span>";\n' +
+'  document.getElementById("nl").innerHTML=filtered.length===0?"<div class=\\"em\\">暫無符合條件的情報</div>":filtered.map(function(n){var s=n.src||"";return\'<div class="ni\'+(n.hot?" hot":"")+\'" onclick="window.open(\\\'"+n.url+"\\\'  ,\\\'_blank\\\')">\'+(n.hot?\'<div class="hb">★ 命中喜好關鍵字</div>\':"")+\'<div class="nt">\'+n.title+\'</div><div class="nm">\'+(s?\'<span class="mb">\'+s+"</span>":""")+(n.date?"<span>"+fmt(n.date)+"</span>":"")+(s?\'<button class="bb" onclick="bS(event,\\\'"+s+"\\\'  )">✕ 封鎖此媒體</button>\':"")+\'</div></div>\';}).join("");\n' +
+'  rT2(); tInit();\n' +
+'}\n' +
+'function bS(e,s){e.preventDefault();e.stopPropagation();if(!cB.includes(s)){cB.push(s);save();render();}}\n' +
+'function tInit(){var l=filtered.slice(0,15);if(!l.length)return;tI=0;tShow(l);}\n' +
+'function tShow(l){if(!l.length)return;var n=l[tI];document.getElementById("tLink").href=n.url;document.getElementById("tHot").style.display=n.hot?"block":"none";document.getElementById("tTitle").textContent=n.title;document.getElementById("tMeta").innerHTML=(n.src||"")+(n.date?" · "+fmt(n.date):"");document.getElementById("tCnt").textContent=(tI+1)+" / "+l.length;clearTimeout(tT);clearInterval(pT);pV=0;document.getElementById("tProg").style.width="0%";pT=setInterval(function(){pV+=2;document.getElementById("tProg").style.width=Math.min(pV,100)+"%";},100);tT=setTimeout(function(){tI=(tI+1)%l.length;tShow(l);},5000);}\n' +
+'function tPrev(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI-1+l.length)%l.length;tShow(l);}\n' +
+'function tNext(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI+1)%l.length;tShow(l);}\n' +
+'function rT2(){document.getElementById("lt").innerHTML=cL.map(function(t,i){return\'<span class="tg lv">\'+t+\' <span class="td" onclick="rT(\\\'love\\\',\'+i+\')">×</span></span>\';}).join("");document.getElementById("bt").innerHTML=cB.map(function(t,i){return\'<span class="tg bk">\'+t+\' <span class="td" onclick="rT(\\\'block\\\',\'+i+\')">×</span></span>\';}).join("");}\n' +
+'function aT(type){var id=type==="love"?"li":"bi",v=document.getElementById(id).value.trim();if(!v)return;if(type==="love")cL.push(v);else cB.push(v);document.getElementById(id).value="";save();render();}\n' +
+'function rT(type,i){if(type==="love")cL.splice(i,1);else cB.splice(i,1);save();render();}\n' +
+'function hardRefresh(){document.getElementById("st").innerHTML=\'<span class="spin"></span>重新提取情報...\';fetch("/api/refresh",{method:"POST"}).then(function(){setTimeout(function(){window.location.reload();},2000);}).catch(function(){window.location.reload();});}\n' +
+'setInterval(function(){cd--;document.getElementById("cd").textContent=cd;if(cd<=0){window.location.reload();}},1000);\n' +
+'render();\n' +
+'<\/script>\n' +
+'</body></html>';
 }
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-body{background:var(--navy-deep);color:var(--text);font-family:'Josefin Sans',sans-serif;font-weight:300;overflow-x:hidden;}
-body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-  background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");opacity:0.4;}
-body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-  background-image:linear-gradient(rgba(212,175,55,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(212,175,55,0.04) 1px,transparent 1px);background-size:56px 56px;}
-#scrollLine{position:fixed;top:0;left:0;height:2px;width:0%;background:linear-gradient(to right,var(--gold),var(--gold-light));z-index:9999;}
-header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-content:space-between;align-items:center;padding:16px 28px;
-  background:linear-gradient(to bottom,rgba(6,15,30,0.97) 80%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid rgba(212,175,55,0.07);}
-.logo-main{font-family:'Cormorant Garamond',serif;font-size:18px;font-weight:700;color:var(--gold);letter-spacing:0.28em;text-transform:uppercase;}
-.logo-sub{font-size:10px;letter-spacing:0.5em;text-transform:uppercase;color:var(--text-dim);margin-top:2px;}
-.hdr-r{display:flex;align-items:center;gap:20px;}
-.live-badge{display:flex;align-items:center;gap:7px;font-size:11px;letter-spacing:0.3em;color:var(--gold);text-transform:uppercase;}
-.live-dot{width:6px;height:6px;background:var(--gold);border-radius:50%;animation:blink 1.5s ease-in-out infinite;}
-@keyframes blink{0%,100%{opacity:1;}50%{opacity:.15;}}
-.hdr-time{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}
-.hero{position:relative;z-index:1;padding:120px 28px 56px;text-align:center;}
-.hero-eyebrow{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:18px;}
-.hero-eyebrow::before,.hero-eyebrow::after{content:'';display:inline-block;width:28px;height:1px;background:var(--gold);vertical-align:middle;margin:0 12px;}
-.hero-title{font-family:'Cormorant Garamond',serif;font-size:clamp(36px,8vw,72px);font-weight:300;line-height:1.05;}
-.hero-title em{font-style:italic;color:var(--gold);}
-.hero-sub{margin-top:18px;font-size:13px;letter-spacing:.14em;color:var(--text-dim);line-height:2;}
-.gold-rule{position:relative;z-index:1;height:1px;background:linear-gradient(to right,transparent,var(--gold) 20%,var(--gold) 80%,transparent);opacity:.2;margin:0 28px;}
-.wrap{max-width:920px;margin:0 auto;padding:0 20px;}
-.sec{position:relative;z-index:1;padding:36px 0 0;}
-.sec-label{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;}
-.sec-label::before{content:'// ';opacity:.45;}
-.ticker-box{background:var(--navy-card);border:1px solid var(--gold-border);position:relative;overflow:hidden;margin-bottom:4px;}
-.ticker-box::before,.ticker-box::after{content:'';position:absolute;width:18px;height:18px;border-color:var(--gold);border-style:solid;}
-.ticker-box::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}
-.ticker-box::after{bottom:-1px;right:-1px;border-width:0 1px 1px 0;}
-.ticker-inner{display:flex;align-items:stretch;min-height:80px;}
-.ticker-tag{background:linear-gradient(135deg,var(--gold),var(--gold-light));color:var(--navy);font-size:10px;font-weight:700;letter-spacing:1px;padding:0 16px;display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;}
-.ticker-content{flex:1;padding:14px 52px 14px 18px;text-decoration:none;display:flex;flex-direction:column;justify-content:center;transition:background .15s;}
-.ticker-content:hover{background:var(--gold-dim);}
-.ticker-hot{font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px;letter-spacing:.5px;text-transform:uppercase;}
-.ticker-title-txt{font-size:15px;font-weight:400;line-height:1.5;color:var(--white);font-family:'Cormorant Garamond',serif;}
-.ticker-content:hover .ticker-title-txt{color:var(--gold);}
-.ticker-meta-txt{font-size:11px;color:var(--text-dim);margin-top:5px;}
-.ticker-counter{position:absolute;top:10px;right:12px;background:rgba(212,175,55,.12);border:1px solid var(--gold-border);color:var(--gold);font-size:11px;font-weight:700;padding:3px 10px;letter-spacing:.1em;}
-.ticker-footer{display:flex;align-items:center;border-top:1px solid rgba(212,175,55,.1);background:rgba(0,0,0,.2);}
-.ticker-prog-wrap{flex:1;padding:8px 14px;}
-.ticker-prog-bg{background:rgba(212,175,55,.1);height:2px;overflow:hidden;}
-.ticker-prog-fill{height:100%;background:linear-gradient(to right,var(--gold),var(--gold-light));width:0%;transition:width .1s linear;}
-.ticker-btns{display:flex;}
-.ticker-btn{background:none;border:none;border-left:1px solid rgba(212,175,55,.1);color:var(--text-dim);font-size:18px;padding:8px 16px;cursor:pointer;transition:color .15s,background .15s;}
-.ticker-btn:hover{color:var(--gold);background:var(--gold-dim);}
-.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
-@media(max-width:560px){.two-col{grid-template-columns:1fr;}}
-.ctrl-box{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px;position:relative;}
-.ctrl-box::before,.ctrl-box::after{content:'';position:absolute;width:12px;height:12px;border-color:var(--gold);border-style:solid;opacity:.35;}
-.ctrl-box::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}
-.ctrl-box::after{bottom:-1px;right:-1px;border-width:0 1px 1px 0;}
-.ctrl-label{font-size:11px;letter-spacing:.42em;text-transform:uppercase;margin-bottom:12px;font-weight:600;}
-.ctrl-label::before{content:'// ';opacity:.45;}
-.ctrl-label.lv{color:var(--green);}
-.ctrl-label.bk{color:var(--red);}
-.inp-row{display:flex;gap:8px;}
-.inp-row input{flex:1;background:rgba(0,0,0,.38);border:1px solid var(--gold-border);color:var(--text);padding:9px 12px;font-family:'Josefin Sans',sans-serif;font-size:13px;outline:none;transition:border-color .3s,box-shadow .3s;}
-.inp-row input::placeholder{color:rgba(224,216,200,.2);}
-.inp-row input:focus{border-color:var(--gold);box-shadow:0 0 18px var(--gold-dim);}
-.inp-btn{padding:9px 16px;border:1px solid;font-family:'Josefin Sans',sans-serif;font-size:12px;font-weight:600;letter-spacing:.3em;text-transform:uppercase;cursor:pointer;transition:all .25s;flex-shrink:0;}
-.inp-btn.lv{background:transparent;border-color:var(--green);color:var(--green);}
-.inp-btn.lv:hover{background:rgba(0,217,126,.1);}
-.inp-btn.bk{background:transparent;border-color:var(--red);color:var(--red);}
-.inp-btn.bk:hover{background:rgba(255,76,76,.1);}
-.tag-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;min-height:4px;}
-.tag{display:inline-flex;align-items:center;gap:4px;font-size:11px;padding:3px 10px;font-weight:600;letter-spacing:.15em;text-transform:uppercase;}
-.tag.lv{background:rgba(0,217,126,.07);color:var(--green);border:1px solid rgba(0,217,126,.25);}
-.tag.bk{background:rgba(255,76,76,.07);color:var(--red);border:1px solid rgba(255,76,76,.25);}
-.tag-del{cursor:pointer;opacity:.6;font-size:13px;}
-.tag-del:hover{opacity:1;}
-.action-bar{display:flex;gap:12px;align-items:stretch;margin-bottom:14px;}
-.btn-refresh{flex:1;background:transparent;border:1px solid var(--gold);color:var(--gold);font-family:'Josefin Sans',sans-serif;font-size:14px;font-weight:400;letter-spacing:.5em;text-transform:uppercase;padding:14px;cursor:pointer;position:relative;overflow:hidden;transition:color .35s;}
-.btn-refresh::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--gold),var(--gold-light));transform:scaleX(0);transform-origin:left;transition:transform .45s ease;z-index:0;}
-.btn-refresh:hover{color:var(--navy);}
-.btn-refresh:hover::before{transform:scaleX(1);}
-.btn-refresh span{position:relative;z-index:1;}
-.cd-box{background:var(--navy-card);border:1px solid var(--gold-border);padding:10px 16px;text-align:center;min-width:72px;display:flex;flex-direction:column;justify-content:center;}
-.cd-n{font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:700;color:var(--gold);line-height:1;}
-.cd-l{font-size:9px;letter-spacing:.4em;color:var(--text-dim);margin-top:3px;text-transform:uppercase;}
-.stats-bar{background:rgba(0,0,0,.3);border:1px solid rgba(212,175,55,.12);padding:10px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center;font-size:12px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:28px;}
-.stats-bar b{color:var(--gold);}
-.spill{font-size:10px;letter-spacing:.2em;padding:2px 9px;border:1px solid;font-weight:600;text-transform:uppercase;}
-.spill.lv{background:rgba(0,217,126,.06);color:var(--green);border-color:rgba(0,217,126,.25);}
-.spill.bk{background:rgba(255,76,76,.06);color:var(--red);border-color:rgba(255,76,76,.25);}
-.stats-right{margin-left:auto;font-size:10px;letter-spacing:.2em;}
-.divider{display:flex;align-items:center;gap:12px;font-size:10px;letter-spacing:.55em;text-transform:uppercase;color:var(--text-dim);margin-bottom:18px;}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:linear-gradient(to right,transparent,rgba(212,175,55,.2),transparent);}
-.news-item{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px 20px;margin-bottom:10px;position:relative;cursor:pointer;transition:border-color .2s,transform .15s;}
-.news-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--gold);transform:scaleY(0);transform-origin:top;transition:transform .28s ease;}
-.news-item:hover::before,.news-item:hover{border-color:var(--gold);transform:translateX(3px);}
-.news-item.hot{border-left:3px solid var(--green);}
-.news-item.hot::before{background:var(--green);}
-.hot-badge{font-size:10px;font-weight:700;color:var(--green);margin-bottom:5px;letter-spacing:.5em;text-transform:uppercase;}
-.news-title-txt{font-family:'Cormorant Garamond',serif;font-size:17px;font-weight:400;line-height:1.5;color:var(--white);margin-bottom:8px;}
-.news-item:hover .news-title-txt{color:var(--gold);}
-.news-item.hot:hover .news-title-txt{color:var(--green);}
-.news-meta-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--text-dim);}
-.media-badge{background:rgba(212,175,55,.08);border:1px solid var(--gold-border);color:var(--gold-light);padding:2px 8px;font-size:10px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;}
-.block-btn{background:none;border:none;color:rgba(224,216,200,.25);cursor:pointer;font-size:10px;font-family:'Josefin Sans',sans-serif;letter-spacing:.2em;text-transform:uppercase;padding:0;text-decoration:underline;margin-left:auto;transition:color .15s;}
-.block-btn:hover{color:var(--red);}
-.spin{display:inline-block;width:14px;height:14px;border:2px solid rgba(212,175,55,.2);border-top-color:var(--gold);border-radius:50%;animation:sp .7s linear infinite;vertical-align:middle;margin-right:6px;}
-@keyframes sp{to{transform:rotate(360deg)}}
-.empty-msg{text-align:center;color:var(--text-dim);font-style:italic;font-size:13px;letter-spacing:.25em;padding:40px 0;}
-footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white-faint);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;}
-.footer-logo{font-family:'Cormorant Garamond',serif;font-size:16px;font-weight:700;letter-spacing:.3em;color:var(--gold);text-transform:uppercase;}
-.footer-text{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}
-</style>
-</head>
-<body>
-<div id="scrollLine"></div>
-<header>
-  <div>
-    <div class="logo-main">The King Tseng</div>
-    <div class="logo-sub">Taiwan Intel Feed · Real-time Strategic News</div>
-  </div>
-  <div class="hdr-r">
-    <div class="hdr-time" id="hdrTime"></div>
-    <div class="live-badge"><div class="live-dot"></div>Live</div>
-  </div>
-</header>
-
-<div class="hero">
-  <div class="hero-eyebrow">AI-Curated Taiwan Intelligence</div>
-  <h1 class="hero-title">精選新聞<br><em>即時情報</em></h1>
-  <p class="hero-sub">皇上曾奕瑋 · The Gold Content of News</p>
-</div>
-<div class="gold-rule"></div>
-
-<div class="sec"><div class="wrap">
-  <div class="sec-label">Top 15 Intelligence Stream</div>
-  <div class="ticker-box">
-    <div class="ticker-inner">
-      <div class="ticker-tag">TOP<br>15</div>
-      <a class="ticker-content" id="tLink" href="#" target="_blank">
-        <div class="ticker-hot" id="tHot" style="display:none">★ 命中喜好關鍵字</div>
-        <div class="ticker-title-txt" id="tTitle">載入中...</div>
-        <div class="ticker-meta-txt" id="tMeta"></div>
-      </a>
-      <div class="ticker-counter" id="tCount">- / -</div>
-    </div>
-    <div class="ticker-footer">
-      <div class="ticker-prog-wrap"><div class="ticker-prog-bg"><div class="ticker-prog-fill" id="tProg"></div></div></div>
-      <div class="ticker-btns">
-        <button class="ticker-btn" onclick="tPrev()">&#8249;</button>
-        <button class="ticker-btn" onclick="tNext()">&#8250;</button>
-      </div>
-    </div>
-  </div>
-</div></div>
-
-<div class="gold-rule" style="margin-top:32px;"></div>
-
-<div class="sec"><div class="wrap">
-  <div class="two-col">
-    <div class="ctrl-box">
-      <div class="ctrl-label lv">喜好關鍵字（置頂）</div>
-      <div class="inp-row">
-        <input id="li" placeholder="曾奕瑋、AI、台積電..." onkeydown="if(event.key==='Enter')aT('love')">
-        <button class="inp-btn lv" onclick="aT('love')">加入</button>
-      </div>
-      <div class="tag-row" id="lt"></div>
-    </div>
-    <div class="ctrl-box">
-      <div class="ctrl-label bk">封鎖黑名單（過濾）</div>
-      <div class="inp-row">
-        <input id="bi" placeholder="三立、爆料公社..." onkeydown="if(event.key==='Enter')aT('block')">
-        <button class="inp-btn bk" onclick="aT('block')">封鎖</button>
-      </div>
-      <div class="tag-row" id="bt"></div>
-    </div>
-  </div>
-  <div class="action-bar">
-    <button class="btn-refresh" onclick="hardRefresh()"><span>⊕ &nbsp; 立即更新新聞</span></button>
-    <div class="cd-box">
-      <div class="cd-n" id="cd">60</div>
-      <div class="cd-l">Auto Refresh</div>
-    </div>
-  </div>
-  <div class="stats-bar" id="st">初始化...</div>
-</div></div>
-
-<div class="sec" style="padding-bottom:60px;"><div class="wrap">
-  <div class="divider">Intelligence Feed</div>
-  <div id="nl"></div>
-</div></div>
-
-<div class="gold-rule"></div>
-<footer>
-  <div class="footer-logo">The King Tseng AI</div>
-  <div class="footer-text">Taiwan Intel Feed · Real-time</div>
-  <div class="footer-text">For Reference Only · Not Investment Advice</div>
-</footer>
-
-<script>
-// ★ 核心：新聞資料直接從伺服器注入，開頁瞬間就有
-var all = ${DATA};
-
-var LK='lv6',BK='bk6';
-var cL=JSON.parse(localStorage.getItem(LK)||'["曾奕瑋","台積電","晶片","AI","正妹"]');
-var cB=JSON.parse(localStorage.getItem(BK)||'["三立","民視","SETN","FTV"]');
-var filtered=[],cd=60,tI=0,tT=null,pT=null,pV=0;
-
-function save(){localStorage.setItem(LK,JSON.stringify(cL));localStorage.setItem(BK,JSON.stringify(cB));}
-
-window.addEventListener('scroll',function(){
-  var p=window.scrollY/(document.body.scrollHeight-window.innerHeight)*100;
-  document.getElementById('scrollLine').style.width=p+'%';
-});
-setInterval(function(){
-  var n=new Date();
-  document.getElementById('hdrTime').textContent=
-    n.getHours().toString().padStart(2,'0')+':'+n.getMinutes().toString().padStart(2,'0')+':'+n.getSeconds().toString().padStart(2,'0');
-},1000);
-
-function fmt(s){
-  if(!s)return'';
-  var d=new Date(s),m=Math.floor((new Date()-d)/60000);
-  if(isNaN(d))return'';if(m<0)m=0;
-  if(m<1)return'Just now';if(m<60)return m+' min ago';
-  if(m<1440)return Math.floor(m/60)+' hr ago';
-  return(d.getMonth()+1)+'/'+(d.getDate());
-}
-
-function render(){
-  filtered=all.filter(function(n){return !cB.some(function(w){return n.title.includes(w);});});
-  filtered=filtered.map(function(n){return Object.assign({},n,{hot:cL.some(function(w){return n.title.includes(w);})});});
-  filtered.sort(function(a,b){return b.hot-a.hot;});
-  var hot=filtered.filter(function(n){return n.hot;}).length;
-  var now=new Date();
-  document.getElementById('st').innerHTML=
-    '總計 <b>'+all.length+'</b> 則 &nbsp;·&nbsp; 顯示 <b>'+filtered.length+'</b> 則 &nbsp;'+
-    '<span class="spill lv">★ '+hot+'</span> &nbsp;<span class="spill bk">✕ '+(all.length-filtered.length)+'</span>'+
-    '<span class="stats-right">'+now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0')+'</span>';
-  document.getElementById('nl').innerHTML=filtered.length===0
-    ?'<div class="empty-msg">暫無符合條件的情報</div>'
-    :filtered.map(function(n){
-      var s=n.src||'';
-      return '<div class="news-item'+(n.hot?' hot':'')+'" onclick="window.open(\''+n.url+'\',\'_blank\')">'+
-        (n.hot?'<div class="hot-badge">★ 命中喜好關鍵字</div>':'')+
-        '<div class="news-title-txt">'+n.title+'</div>'+
-        '<div class="news-meta-row">'+
-        (s?'<span class="media-badge">'+s+'</span>':'')+
-        (n.date?'<span>'+fmt(n.date)+'</span>':'')+
-        (s?'<button class="block-btn" onclick="bSrc(event,\''+s+'\')">✕ 封鎖此媒體</button>':'')+
-        '</div></div>';
-    }).join('');
-  rTags(); tInit();
-}
-
-function bSrc(e,s){e.preventDefault();e.stopPropagation();if(!cB.includes(s)){cB.push(s);save();render();}}
-function tInit(){var l=filtered.slice(0,15);if(!l.length)return;tI=0;tShow(l);}
-function tShow(l){
-  if(!l.length)return;var n=l[tI];
-  document.getElementById('tLink').href=n.url;
-  document.getElementById('tHot').style.display=n.hot?'block':'none';
-  document.getElementById('tTitle').textContent=n.title;
-  document.getElementById('tMeta').innerHTML=(n.src||'')+(n.date?' · '+fmt(n.date):'');
-  document.getElementById('tCount').textContent=(tI+1)+' / '+l.length;
-  clearTimeout(tT);clearInterval(pT);pV=0;document.getElementById('tProg').style.width='0%';
-  pT=setInterval(function(){pV+=2;document.getElementById('tProg').style.width=Math.min(pV,100)+'%';},100);
-  tT=setTimeout(function(){tI=(tI+1)%l.length;tShow(l);},5000);
-}
-function tPrev(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI-1+l.length)%l.length;tShow(l);}
-function tNext(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI+1)%l.length;tShow(l);}
-function rTags(){
-  document.getElementById('lt').innerHTML=cL.map(function(t,i){return '<span class="tag lv">'+t+' <span class="tag-del" onclick="rT(\'love\','+i+')">×</span></span>';}).join('');
-  document.getElementById('bt').innerHTML=cB.map(function(t,i){return '<span class="tag bk">'+t+' <span class="tag-del" onclick="rT(\'block\','+i+')">×</span></span>';}).join('');
-}
-function aT(type){
-  var id=type==='love'?'li':'bi',v=document.getElementById(id).value.trim();
-  if(!v)return;if(type==='love')cL.push(v);else cB.push(v);
-  document.getElementById(id).value='';save();render();
-}
-function rT(type,i){if(type==='love')cL.splice(i,1);else cB.splice(i,1);save();render();}
-
-// 60秒後重載頁面取得最新資料（最簡單可靠的更新方式）
-function hardRefresh(){
-  document.getElementById('st').innerHTML='<span class="spin"></span>重新提取情報...';
-  fetch('/api/refresh?t='+Date.now(),{method:'POST'}).then(function(){
-    setTimeout(function(){window.location.reload();},3000);
-  }).catch(function(){window.location.reload();});
-}
-
-setInterval(function(){
-  cd--;document.getElementById('cd').textContent=cd;
-  if(cd<=0){window.location.reload();}
-},1000);
-
-// 頁面載入即渲染，不需要 fetch
-render();
-
-// 如果 all 是空的（伺服器剛冷啟動），才去 polling
-if(all.length===0){
-  document.getElementById('st').innerHTML='<span class="spin"></span>伺服器啟動中，情報提取中...';
-  (function poll(){
-    fetch('/news.json?t='+Date.now())
-      .then(function(r){return r.json();})
-      .then(function(d){
-        if(d&&d.length>0){all=d;render();}
-        else setTimeout(poll,3000);
-      })
-      .catch(function(){setTimeout(poll,5000);});
-  })();
-}
-</script>
-</body>
-</html>`;
-}
+ENDOFFILE
+node --check /mnt/user-data/outputs/index.js && echo "SYNTAX OK"
