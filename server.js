@@ -1,18 +1,25 @@
-Cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
+const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 10000;
-const CACHE_FILE = '/tmp/news_cache.json';
+const CACHE_FILE = path.join(__dirname, 'news_cache.json');
 
 app.use(express.json());
 
 let cache = [];
 try {
-    const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    if (saved.length) { cache = saved; console.log('讀快取：' + cache.length + ' 則'); }
-} catch(e) {}
+    if (fs.existsSync(CACHE_FILE)) {
+        const saved = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (saved && saved.length) { 
+            cache = saved; 
+            console.log('讀快取：' + cache.length + ' 則'); 
+        }
+    }
+} catch(e) {
+    console.log('讀取快取失敗: ' + e.message);
+}
 
 async function refresh() {
     try {
@@ -35,8 +42,14 @@ async function refresh() {
                 date:  dM ? dM[1].trim() : ''
             });
         });
-        if (news.length) { cache = news; fs.writeFileSync(CACHE_FILE, JSON.stringify(news)); console.log('更新：' + news.length + ' 則'); }
-    } catch(e) { console.log('失敗:' + e.message); }
+        if (news.length) { 
+            cache = news; 
+            fs.writeFileSync(CACHE_FILE, JSON.stringify(news)); 
+            console.log('更新：' + news.length + ' 則'); 
+        }
+    } catch(e) { 
+        console.log('更新失敗: ' + e.message); 
+    }
 }
 
 refresh();
@@ -71,7 +84,6 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   background-size:56px 56px;}
 #scrollLine{position:fixed;top:0;left:0;height:2px;width:0%;background:linear-gradient(to right,var(--gold),var(--gold-light));z-index:9999;transition:width .1s linear;}
 
-/* HEADER */
 header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-content:space-between;align-items:center;padding:16px 28px;
   background:linear-gradient(to bottom,rgba(6,15,30,0.97) 80%,transparent);backdrop-filter:blur(10px);
   border-bottom:1px solid rgba(212,175,55,0.07);}
@@ -83,7 +95,6 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 @keyframes blinkDot{0%,100%{opacity:1;}50%{opacity:.15;}}
 .header-time{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}
 
-/* HERO */
 .hero{position:relative;z-index:1;padding:120px 28px 56px;text-align:center;}
 .hero-eyebrow{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:18px;font-weight:400;}
 .hero-eyebrow::before{content:'';display:inline-block;width:28px;height:1px;background:var(--gold);vertical-align:middle;margin-right:12px;}
@@ -93,10 +104,8 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .hero-sub{margin-top:18px;font-size:13px;letter-spacing:.14em;color:var(--text-dim);line-height:2;}
 .gold-rule{position:relative;z-index:1;height:1px;background:linear-gradient(to right,transparent,var(--gold) 20%,var(--gold) 80%,transparent);opacity:.2;margin:0 28px;}
 
-/* SECTION WRAP */
 .wrap{max-width:920px;margin:0 auto;padding:0 20px;}
 
-/* TICKER */
 .ticker-section{position:relative;z-index:1;padding:40px 0 0;}
 .section-label{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;font-weight:400;}
 .section-label::before{content:'// ';opacity:.45;}
@@ -121,7 +130,6 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .ticker-btn{background:none;border:none;border-left:1px solid rgba(212,175,55,.1);color:var(--text-dim);font-size:18px;padding:8px 16px;cursor:pointer;transition:color .15s,background .15s;font-family:'Josefin Sans',sans-serif;}
 .ticker-btn:hover{color:var(--gold);background:var(--gold-dim);}
 
-/* CONTROLS */
 .controls-section{position:relative;z-index:1;padding:32px 0 0;}
 .two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
 @media(max-width:560px){.two-col{grid-template-columns:1fr;}}
@@ -149,7 +157,6 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .tag-del{cursor:pointer;opacity:.6;font-size:13px;}
 .tag-del:hover{opacity:1;}
 
-/* ACTION BAR */
 .action-bar{display:flex;gap:12px;align-items:stretch;margin-bottom:14px;}
 .btn-refresh{flex:1;background:transparent;border:1px solid var(--gold);color:var(--gold);font-family:'Josefin Sans',sans-serif;font-size:14px;font-weight:400;letter-spacing:.5em;text-transform:uppercase;padding:14px;cursor:pointer;position:relative;overflow:hidden;transition:color .35s;}
 .btn-refresh::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--gold),var(--gold-light));transform:scaleX(0);transform-origin:left;transition:transform .45s ease;z-index:0;}
@@ -160,7 +167,6 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .cd-box .n{font-family:'Cormorant Garamond',serif;font-size:28px;font-weight:700;color:var(--gold);line-height:1;}
 .cd-box .l{font-size:9px;letter-spacing:.4em;color:var(--text-dim);margin-top:3px;text-transform:uppercase;}
 
-/* STATS BAR */
 .stats-bar{background:rgba(0,0,0,.3);border:1px solid rgba(212,175,55,.12);padding:10px 16px;display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:12px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:28px;}
 .stats-bar b{color:var(--gold);font-weight:700;}
 .stats-pill{font-size:10px;letter-spacing:.2em;padding:2px 9px;border:1px solid;font-weight:600;text-transform:uppercase;}
@@ -168,11 +174,9 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .stats-pill.bk{background:rgba(255,76,76,.06);color:var(--red);border-color:rgba(255,76,76,.25);}
 .stats-bar .right{margin-left:auto;font-size:10px;letter-spacing:.2em;}
 
-/* DIVIDER */
 .divider{display:flex;align-items:center;gap:12px;font-size:10px;letter-spacing:.55em;text-transform:uppercase;color:var(--text-dim);margin-bottom:18px;}
 .divider::before,.divider::after{content:'';flex:1;height:1px;background:linear-gradient(to right,transparent,rgba(212,175,55,.2),transparent);}
 
-/* NEWS LIST */
 .news-section{position:relative;z-index:1;padding-bottom:60px;}
 .news-item{background:var(--navy-card);border:1px solid var(--gold-border);padding:18px 20px;margin-bottom:10px;position:relative;display:block;transition:border-color .2s,background .2s,transform .15s;cursor:pointer;}
 .news-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--gold);transform:scaleY(0);transform-origin:top;transition:transform .28s ease;}
@@ -189,7 +193,6 @@ header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-cont
 .block-src-btn{background:none;border:none;color:rgba(224,216,200,.3);cursor:pointer;font-size:10px;font-family:'Josefin Sans',sans-serif;letter-spacing:.2em;text-transform:uppercase;padding:0;text-decoration:underline;margin-left:auto;transition:color .15s;}
 .block-src-btn:hover{color:var(--red);}
 
-/* LOADING */
 .loading-text{text-align:center;color:var(--gold);font-style:italic;font-size:13px;letter-spacing:.25em;padding:40px 0;animation:blink 1.6s ease-in-out infinite;}
 @keyframes blink{0%,100%{opacity:.45;}50%{opacity:1;}}
 
@@ -223,7 +226,6 @@ footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white
 
 <div class="gold-rule"></div>
 
-<!-- TICKER -->
 <div class="ticker-section">
 <div class="wrap">
   <div class="section-label">Top 15 Intelligence Stream</div>
@@ -250,7 +252,6 @@ footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white
 
 <div class="gold-rule" style="margin-top:32px;"></div>
 
-<!-- CONTROLS -->
 <div class="controls-section">
 <div class="wrap">
   <div class="two-col">
@@ -284,13 +285,11 @@ footer{position:relative;z-index:1;padding:28px;border-top:1px solid var(--white
 </div>
 </div>
 
-<!-- NEWS -->
 <div class="news-section">
 <div class="wrap">
   <div class="divider">Intelligence Feed</div>
   <div id="nl"></div>
 </div>
-
 </div>
 
 <div class="gold-rule"></div>
@@ -308,13 +307,11 @@ var all=[],filtered=[],cd=60,tIdx=0,tTimer=null,tPTimer=null,tPVal=0;
 
 function save(){localStorage.setItem(LOVE_KEY,JSON.stringify(cL));localStorage.setItem(BLOCK_KEY,JSON.stringify(cB));}
 
-// scroll line
 window.addEventListener('scroll',function(){
   var p=window.scrollY/(document.body.scrollHeight-window.innerHeight)*100;
   document.getElementById('scrollLine').style.width=p+'%';
 });
 
-// header clock
 function updateClock(){
   var now=new Date();
   document.getElementById('headerTime').textContent=
@@ -326,7 +323,7 @@ function fmt(s){
   if(!s)return'';
   var d=new Date(s),m=Math.floor((new Date()-d)/60000);
   if(isNaN(d))return'';
-  if(m<0)m=0; // 時區防禦：防止負數導致顯示錯誤
+  if(m<0)m=0;
   if(m<1)return'Just now';if(m<60)return m+' min ago';
   if(m<1440)return Math.floor(m/60)+' hr ago';
   return(d.getMonth()+1)+'/'+(d.getDate());
@@ -348,7 +345,6 @@ function render(){
 
   document.getElementById('nl').innerHTML=filtered.map(function(n){
     var src=n.src||'';
-    // 改為 div 容器避免 W3C 語法衝突，並透過 onclick 全域跳轉
     return '<div class="news-item'+(n.hot?' hot':'')+'" onclick="window.open(\''+n.url+'\', \'_blank\')">'+
       (n.hot?'<div class="hot-badge">★ 命中喜好關鍵字</div>':'')+
       '<div class="news-title-text">'+n.title+'</div>'+
@@ -364,7 +360,7 @@ function render(){
 }
 
 function blockSrc(e,src){
-  e.preventDefault();e.stopPropagation(); // 這裡配合外層 div 點擊能完美阻斷冒泡
+  e.preventDefault();e.stopPropagation();
   if(!cB.includes(src)){cB.push(src);save();render();}
 }
 
@@ -440,5 +436,3 @@ window.onload=load;
 </html>`));
 
 app.listen(PORT, () => console.log('port ' + PORT));
-ENDOFFILE
-node --check /mnt/user-data/outputs/index.js && echo "SYNTAX OK"
