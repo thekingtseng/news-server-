@@ -1,25 +1,30 @@
-cat > /mnt/user-data/outputs/index.js << 'ENDOFFILE'
 const express = require('express');
 const axios   = require('axios');
 const fs      = require('fs');
+const path    = require('path');
 const app     = express();
 const PORT    = process.env.PORT || 10000;
-const CACHE_FILE = '/tmp/nc.json';
+// [修正 1] 將快取路徑移到專案根目錄，防止個別容器環境下的 /tmp 權限遭平台抹除
+const CACHE_FILE = path.join(__dirname, 'nc.json');
 
 app.use(express.json());
 
-// ─── 快取 ───────────────────────────────────────────
 let cache = [];
 
+// 啟動時安全讀取快取
 try {
-    const s = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-    if (Array.isArray(s) && s.length > 0) {
-        cache = s;
-        console.log('[CACHE] loaded ' + cache.length);
+    if (fs.existsSync(CACHE_FILE)) {
+        const s = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (Array.isArray(s) && s.length > 0) {
+            cache = s;
+            console.log('[CACHE] 成功載入歷史情報：' + cache.length + ' 則');
+        }
     }
-} catch(e) {}
+} catch(e) {
+    console.log('[CACHE] 讀取失敗: ' + e.message);
+}
 
-// ─── RSS 抓取 ────────────────────────────────────────
+// 高強度偽裝 RSS 抓取器
 function parseRSS(xml) {
     const news = [];
     if (!xml || !xml.includes('<item>')) return news;
@@ -32,9 +37,9 @@ function parseRSS(xml) {
         const dash = raw.lastIndexOf(' - ');
         news.push({
             title: dash > 0 ? raw.substring(0, dash).trim() : raw,
-            src:   dash > 0 ? raw.substring(dash+3).trim() : '',
+            src:   dash > 0 ? raw.substring(dash+3).trim() : '焦點新聞',
             url:   lM[1].trim(),
-            date:  dM ? dM[1].trim() : ''
+            date:  dM ? dM[1].trim() : new Date().toUTCString()
         });
     });
     return news;
@@ -42,58 +47,50 @@ function parseRSS(xml) {
 
 async function doRefresh() {
     try {
+        // [修正 2] 升級為高階 Mac Chrome 瀏覽器標頭，防止被 Google 反爬蟲機制無情封鎖
         const r = await axios.get(
             'https://news.google.com/rss?hl=zh-TW&gl=TW&ceid=TW:zh-Hant',
-            { headers:{ 'User-Agent':'Mozilla/5.0' }, timeout:10000 }
+            { 
+                headers:{ 
+                    'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                    'Accept': 'application/rss+xml, application/xml;q=0.9, */*;q=0.8'
+                }, 
+                timeout:10000 
+            }
         );
         const news = parseRSS(r.data);
         if (news.length > 0) {
             cache = news;
-            try { fs.writeFileSync(CACHE_FILE, JSON.stringify(news)); } catch(e) {}
-            console.log('[RSS] ok ' + news.length);
+            try { fs.writeFileSync(CACHE_FILE, JSON.stringify(news), 'utf8'); } catch(e) {}
+            console.log('[RSS] 戰略情報成功更新：' + news.length + ' 則');
             return true;
         }
     } catch(e) {
-        console.log('[RSS] fail: ' + e.message);
+        console.log('[RSS] 抓取失敗: ' + e.message);
     }
     return false;
 }
 
-// server 啟動馬上抓，每 2 分鐘更新
-doRefresh();
+// 伺服器啟動馬上抓（異步背景執行），每 2 分鐘自動更新
+setTimeout(doRefresh, 100);
 setInterval(doRefresh, 120000);
 
-// ─── 等 cache 有資料的 helper ────────────────────────
-function waitForCache(ms) {
-    return new Promise(function(resolve) {
-        if (cache.length > 0) return resolve();
-        const t0 = Date.now();
-        const iv = setInterval(function() {
-            if (cache.length > 0 || Date.now() - t0 > ms) {
-                clearInterval(iv);
-                resolve();
-            }
-        }, 200);
-    });
-}
-
-// ─── 安全序列化：防止破壞 HTML/JS ───────────────────
 function safeJSON(data) {
     return JSON.stringify(data)
         .replace(/<\/script>/gi, '<\\/script>')
         .replace(/<!--/g, '<\\!--');
 }
 
-// ─── 主頁：等 cache 再回應，保證有資料 ───────────────
-app.get('/', async function(req, res) {
-    await waitForCache(12000);   // 最多等 12 秒
+// ─── [修正 3] 移除阻塞主頁的 waitForCache 12秒等待 ───────────────────
+// 讓網頁做到 0.1 秒極速「秒開」，如果快取暫時沒資料，由前端優雅呈現載入狀態，絕不卡死
+app.get('/', function(req, res) {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.send(buildHTML());
 });
 
-// ─── JSON API（60秒背景刷新用）──────────────────────
 app.get('/news.json', function(req, res) {
-    res.setHeader('Cache-Control', 'no-cache, no-store');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.json(cache);
 });
 
@@ -102,50 +99,48 @@ app.post('/api/refresh', async function(req, res) {
     res.json({ ok: ok, count: cache.length });
 });
 
-app.listen(PORT, function() { console.log('port ' + PORT); });
+app.listen(PORT, function() { console.log('【皇上御製系統二版】監聽埠口已成功開閘：' + PORT); });
 
-// ─── HTML ────────────────────────────────────────────
 function buildHTML() {
-    // 資料直接注入 JS 變數，不做 fetch
     const DATA = safeJSON(cache);
 
-    return '<!DOCTYPE html>\n' +
-'<html lang="zh-TW">\n' +
-'<head>\n' +
-'<meta charset="UTF-8">\n' +
-'<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">\n' +
-'<title>THE KING TSENG — TAIWAN INTEL FEED</title>\n' +
-'<link rel="preconnect" href="https://fonts.googleapis.com">\n' +
-'<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Josefin+Sans:wght@100;300;400;600&display=swap" rel="stylesheet">\n' +
-'<style>\n' +
-':root{--gold:#D4AF37;--gold-light:#E8CC6A;--gold-dim:rgba(212,175,55,0.12);--gold-border:rgba(212,175,55,0.28);--navy:#0A192F;--navy-mid:#0C1F3A;--navy-card:#0F2445;--navy-deep:#060F1E;--text:#E0D8C8;--text-dim:rgba(224,216,200,0.52);--white:#F0EAD6;--white-faint:rgba(240,234,214,0.08);--green:#00D97E;--red:#FF4C4C;}\n' +
-'*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}\n' +
-'body{background:var(--navy-deep);color:var(--text);font-family:"Josefin Sans",sans-serif;font-weight:300;overflow-x:hidden;}\n' +
-'body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg viewBox=\'0 0 256 256\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'n\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.9\' numOctaves=\'4\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23n)\' opacity=\'0.035\'/%3E%3C/svg%3E");opacity:0.4;}\n' +
-'body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(212,175,55,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(212,175,55,0.04) 1px,transparent 1px);background-size:56px 56px;}\n' +
-'#sl{position:fixed;top:0;left:0;height:2px;width:0%;background:linear-gradient(to right,var(--gold),var(--gold-light));z-index:9999;}\n' +
-'header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-content:space-between;align-items:center;padding:16px 28px;background:linear-gradient(to bottom,rgba(6,15,30,0.97) 80%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid rgba(212,175,55,0.07);}\n' +
-'.lm{font-family:"Cormorant Garamond",serif;font-size:18px;font-weight:700;color:var(--gold);letter-spacing:0.28em;text-transform:uppercase;}\n' +
-'.ls{font-size:10px;letter-spacing:0.5em;text-transform:uppercase;color:var(--text-dim);margin-top:2px;}\n' +
-'.hr{display:flex;align-items:center;gap:20px;}\n' +
-'.lb{display:flex;align-items:center;gap:7px;font-size:11px;letter-spacing:0.3em;color:var(--gold);text-transform:uppercase;}\n' +
-'.ld{width:6px;height:6px;background:var(--gold);border-radius:50%;animation:blink 1.5s ease-in-out infinite;}\n' +
-'@keyframes blink{0%,100%{opacity:1;}50%{opacity:.15;}}\n' +
-'.ht{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}\n' +
-'.hero{position:relative;z-index:1;padding:120px 28px 56px;text-align:center;}\n' +
-'.hew{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:18px;}\n' +
-'.hew::before,.hew::after{content:"";display:inline-block;width:28px;height:1px;background:var(--gold);vertical-align:middle;margin:0 12px;}\n' +
-'.htl{font-family:"Cormorant Garamond",serif;font-size:clamp(36px,8vw,72px);font-weight:300;line-height:1.05;}\n' +
-'.htl em{font-style:italic;color:var(--gold);}\n' +
-'.hsb{margin-top:18px;font-size:13px;letter-spacing:.14em;color:var(--text-dim);line-height:2;}\n' +
-'.gr{position:relative;z-index:1;height:1px;background:linear-gradient(to right,transparent,var(--gold) 20%,var(--gold) 80%,transparent);opacity:.2;margin:0 28px;}\n' +
-'.wrap{max-width:920px;margin:0 auto;padding:0 20px;}\n' +
-'.sec{position:relative;z-index:1;padding:36px 0 0;}\n' +
-'.sl2{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;}\n' +
-'.sl2::before{content:"// ";opacity:.45;}\n' +
-'.tkb{background:var(--navy-card);border:1px solid var(--gold-border);position:relative;overflow:hidden;margin-bottom:4px;}\n' +
-'.tkb::before,.tkb::after{content:"";position:absolute;width:18px;height:18px;border-color:var(--gold);border-style:solid;}\n' +
-'.tkb::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}\n' +
+    return `<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>THE KING TSENG — TAIWAN INTEL FEED</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Josefin+Sans:wght@100;300;400;600&display=swap" rel="stylesheet">
+<style>
+:root{--gold:#D4AF37;--gold-light:#E8CC6A;--gold-dim:rgba(212,175,55,0.12);--gold-border:rgba(212,175,55,0.28);--navy:#0A192F;--navy-mid:#0C1F3A;--navy-card:#0F2445;--navy-deep:#060F1E;--text:#E0D8C8;--text-dim:rgba(224,216,200,0.52);--white:#F0EAD6;--white-faint:rgba(240,234,214,0.08);--green:#00D97E;--red:#FF4C4C;}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--navy-deep);color:var(--text);font-family:"Josefin Sans",sans-serif;font-weight:300;overflow-x:hidden;}
+body::before{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");opacity:0.4;}
+body::after{content:"";position:fixed;inset:0;z-index:0;pointer-events:none;background-image:linear-gradient(rgba(212,175,55,0.04) 1px,transparent 1px),linear-gradient(90deg,rgba(212,175,55,0.04) 1px,transparent 1px);background-size:56px 56px;}
+#sl{position:fixed;top:0;left:0;height:2px;width:0%;background:linear-gradient(to right,var(--gold),var(--gold-light));z-index:9999;}
+header{position:fixed;top:0;left:0;right:0;z-index:500;display:flex;justify-content:space-between;align-items:center;padding:16px 28px;background:linear-gradient(to bottom,rgba(6,15,30,0.97) 80%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid rgba(212,175,55,0.07);}
+.lm{font-family:"Cormorant Garamond",serif;font-size:18px;font-weight:700;color:var(--gold);letter-spacing:0.28em;text-transform:uppercase;}
+.ls{font-size:10px;letter-spacing:0.5em;text-transform:uppercase;color:var(--text-dim);margin-top:2px;}
+.hr{display:flex;align-items:center;gap:20px;}
+.lb{display:flex;align-items:center;gap:7px;font-size:11px;letter-spacing:0.3em;color:var(--gold);text-transform:uppercase;}
+.ld{width:6px;height:6px;background:var(--gold);border-radius:50%;animation:blink 1.5s ease-in-out infinite;}
+@keyframes blink{0%,100%{opacity:1;}50%{opacity:.15;}}
+.ht{font-size:11px;letter-spacing:.2em;color:var(--text-dim);}
+.hero{position:relative;z-index:1;padding:120px 28px 56px;text-align:center;}
+.hew{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:18px;}
+.hew::before,.hew::after{content:"";display:inline-block;width:28px;height:1px;background:var(--gold);vertical-align:middle;margin:0 12px;}
+.htl{font-family:"Cormorant Garamond",serif;font-size:clamp(36px,8vw,72px);font-weight:300;line-height:1.05;}
+.htl em{font-style:italic;color:var(--gold);}
+.hsb{margin-top:18px;font-size:13px;letter-spacing:.14em;color:var(--text-dim);line-height:2;}
+.gr{position:relative;z-index:1;height:1px;background:linear-gradient(to right,transparent,var(--gold) 20%,var(--gold) 80%,transparent);opacity:.2;margin:0 28px;}
+.wrap{max-width:920px;margin:0 auto;padding:0 20px;}
+.sec{position:relative;z-index:1;padding:36px 0 0;}
+.sl2{font-size:11px;letter-spacing:.55em;text-transform:uppercase;color:var(--gold);margin-bottom:12px;}
+.sl2::before{content:"// ";opacity:.45;}
+.tkb{background:var(--navy-card);border:1px solid var(--gold-border);position:relative;overflow:hidden;margin-bottom:4px;}
+.tkb::before,.tkb::after{content:"";position:absolute;width:18px;height:18px;border-color:var(--gold);border-style:solid;}
+.tkb::before{top:-1px;left:-1px;border-width:1px 0 0 1px;}\n' +
 '.tkb::after{bottom:-1px;right:-1px;border-width:0 1px 1px 0;}\n' +
 '.tki{display:flex;align-items:stretch;min-height:80px;}\n' +
 '.tkt{background:linear-gradient(135deg,var(--gold),var(--gold-light));color:var(--navy);font-size:10px;font-weight:700;letter-spacing:1px;padding:0 16px;display:flex;align-items:center;flex-shrink:0;text-transform:uppercase;}\n' +
@@ -258,8 +253,8 @@ function buildHTML() {
 '<div class="gr" style="margin-top:32px;"></div>\n' +
 '<div class="sec"><div class="wrap">\n' +
 '  <div class="two">\n' +
-'    <div class="cb"><div class="cl lv">喜好關鍵字（置頂）</div><div class="ir"><input id="li" placeholder="曾奕瑋、AI..." onkeydown="if(event.key===\'Enter\')aT(\'love\')"><button class="ib lv" onclick="aT(\'love\')">加入</button></div><div class="tr" id="lt"></div></div>\n' +
-'    <div class="cb"><div class="cl bk">封鎖黑名單（過濾）</div><div class="ir"><input id="bi" placeholder="三立、爆料..." onkeydown="if(event.key===\'Enter\')aT(\'block\')"><button class="ib bk" onclick="aT(\'block\')">封鎖</button></div><div class="tr" id="bt"></div></div>\n' +
+'    <div class="cb"><div class="cl lv">喜好關鍵字（置頂）</div><div class="ir"><input id="li" placeholder="曾奕瑋、AI..." onkeydown="if(event.key===\\'Enter\\')aT(\\'love\\')"><button class="ib lv" onclick="aT(\\'love\\')">加入</button></div><div class="tr" id="lt"></div></div>\n' +
+'    <div class="cb"><div class="cl bk">封鎖黑名單（過濾）</div><div class="ir"><input id="bi" placeholder="三立、爆料..." onkeydown="if(event.key===\\'Enter\\')aT(\\'block\\')"><button class="ib bk" onclick="aT(\\'block\\')">封鎖</button></div><div class="tr" id="bt"></div></div>\n' +
 '  </div>\n' +
 '  <div class="ab"><button class="br" onclick="hardRefresh()"><span>⊕ &nbsp; 立即更新新聞</span></button><div class="cdb"><div class="cdn" id="cd">60</div><div class="cdl">Auto Refresh</div></div></div>\n' +
 '  <div class="sb" id="st">初始化...</div>\n' +
@@ -291,18 +286,37 @@ function buildHTML() {
 '  rT2(); tInit();\n' +
 '}\n' +
 'function bS(e,s){e.preventDefault();e.stopPropagation();if(!cB.includes(s)){cB.push(s);save();render();}}\n' +
-'function tInit(){var l=filtered.slice(0,15);if(!l.length)return;tI=0;tShow(l);}\n' +
+'function tInit(){var l=filtered.slice(0,15);if(!l.length){document.getElementById("tTitle").textContent="偵測系統背景初始化中...";return;}tI=0;tShow(l);}\n' +
 'function tShow(l){if(!l.length)return;var n=l[tI];document.getElementById("tLink").href=n.url;document.getElementById("tHot").style.display=n.hot?"block":"none";document.getElementById("tTitle").textContent=n.title;document.getElementById("tMeta").innerHTML=(n.src||"")+(n.date?" · "+fmt(n.date):"");document.getElementById("tCnt").textContent=(tI+1)+" / "+l.length;clearTimeout(tT);clearInterval(pT);pV=0;document.getElementById("tProg").style.width="0%";pT=setInterval(function(){pV+=2;document.getElementById("tProg").style.width=Math.min(pV,100)+"%";},100);tT=setTimeout(function(){tI=(tI+1)%l.length;tShow(l);},5000);}\n' +
 'function tPrev(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI-1+l.length)%l.length;tShow(l);}\n' +
 'function tNext(){var l=filtered.slice(0,15);if(!l.length)return;tI=(tI+1)%l.length;tShow(l);}\n' +
 'function rT2(){document.getElementById("lt").innerHTML=cL.map(function(t,i){return\'<span class="tg lv">\'+t+\' <span class="td" onclick="rT(\\\'love\\\',\'+i+\')">×</span></span>\';}).join("");document.getElementById("bt").innerHTML=cB.map(function(t,i){return\'<span class="tg bk">\'+t+\' <span class="td" onclick="rT(\\\'block\\\',\'+i+\')">×</span></span>\';}).join("");}\n' +
 'function aT(type){var id=type==="love"?"li":"bi",v=document.getElementById(id).value.trim();if(!v)return;if(type==="love")cL.push(v);else cB.push(v);document.getElementById(id).value="";save();render();}\n' +
-'function rT(type,i){if(type==="love")cL.splice(i,1);else cB.splice(i,1);save();render();}\n' +
-'function hardRefresh(){document.getElementById("st").innerHTML=\'<span class="spin"></span>重新提取情報...\';fetch("/api/refresh",{method:"POST"}).then(function(){setTimeout(function(){window.location.reload();},2000);}).catch(function(){window.location.reload();});}\n' +
-'setInterval(function(){cd--;document.getElementById("cd").textContent=cd;if(cd<=0){window.location.reload();}},1000);\n' +
+'function rT(type,i){if(type==="love")cL.splice(i,1);else cB.splice(i,1);save();render()}\n' +
+'function hardRefresh(){document.getElementById("st").innerHTML=\'<span class="spin"></span>重新提取情報...\';fetch("/api/refresh",{method:"POST"}).then(function(r){return r.json();}).then(function(res){if(res.ok){all=res.cache||all;render();}else{window.location.reload();}}).catch(function(){window.location.reload();});}\n' +
+'// ─── [修正 4] 將原本強制的整頁面 reload 升級為「異步無感背景沖刷」 ───\n' +
+'// 每 60 秒時間到時，悄悄去問後端有沒有新新聞，有的話「就地更新數據」，使用者完全不用忍受重開網頁的卡頓感！\n' +
+'setInterval(function(){\n' +
+'  cd--;\n' +
+'  document.getElementById("cd").textContent=cd;\n' +
+'  if(cd<=0){\n' +
+'     cd=60;\n' +
+'     fetch("/news.json?t=" + new Date().getTime())\n' +
+'       .then(function(res){return res.json();})\n' +
+'       .then(function(d){\n' +
+'          if(d && d.length){ all = d; render(); }\n' +
+'       }).catch(function(){});\n' +
+'  }\n' +
+'},1000);\n' +
+'if(!all || !all.length){\n' +
+'   // 如果初次進來伺服器還在進貨，自動啟動每隔1.5秒的快速撈取，直到資料到手為止\n' +
+'   var fI = setInterval(function(){\n' +
+'      fetch("/news.json").then(function(r){return r.json()}).then(function(d){\n' +
+'         if(d && d.length){ all = d; render(); clearInterval(fI); }\n' +
+'      })\n' +
+'   }, 1500);\n' +
+'}\n' +
 'render();\n' +
 '<\/script>\n' +
-'</body></html>';
+'</body></html>`;
 }
-ENDOFFILE
-node --check /mnt/user-data/outputs/index.js && echo "SYNTAX OK"
